@@ -5167,6 +5167,27 @@ public class DBService implements RolesProvider, DomainProvider {
                     mergeOriginalRoleAndMetaRoleAttributes(originalRole, templateRole);
                 }
 
+                // Check for invalid state: Role with both members and trust
+                if (!StringUtil.isEmpty(templateRole.getTrust()) &&
+                        templateRole.getRoleMembers() != null && !templateRole.getRoleMembers().isEmpty()) {
+                    LOG.warn("SolutionTemplate role {} has both trust and members defined", templateRole.getName());
+                }
+
+                // Check for conflict: Existing members, applying Trust
+                if (originalRole != null && StringUtil.isEmpty(originalRole.getTrust()) &&
+                        originalRole.getRoleMembers() != null && !originalRole.getRoleMembers().isEmpty()) {
+                    if (!StringUtil.isEmpty(templateRole.getTrust())) {
+                        LOG.warn("SolutionTemplate is setting trust on role {} which already has members", templateRole.getName());
+                    }
+                }
+
+                // Check for conflict: Existing Trust, applying Members
+                if (originalRole != null && !StringUtil.isEmpty(originalRole.getTrust())) {
+                    if (templateRole.getRoleMembers() != null && !templateRole.getRoleMembers().isEmpty()) {
+                        LOG.warn("SolutionTemplate is adding members to role {} which is a trusted role", templateRole.getName());
+                    }
+                }
+
                 // before processing, make sure to validate the role to make
                 // sure it's valid after all the substitutions
 
