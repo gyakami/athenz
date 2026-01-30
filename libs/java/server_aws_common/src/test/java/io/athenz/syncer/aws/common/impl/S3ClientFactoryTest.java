@@ -35,6 +35,8 @@ import software.amazon.awssdk.http.TlsTrustManagersProvider;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.http.SdkHttpClient;
+import software.amazon.awssdk.core.checksums.RequestChecksumCalculation;
+import software.amazon.awssdk.core.checksums.ResponseChecksumValidation;
 
 import java.net.URI;
 import java.security.cert.X509Certificate;
@@ -301,5 +303,173 @@ public class S3ClientFactoryTest {
         when(mockS3Client.headBucket(any(HeadBucketRequest.class))).thenThrow(new RuntimeException("The specified bucket does not exist"));
 
         S3ClientFactory.verifyBucketExist(mockS3Client, "nonexistent-bucket");
+    }
+
+    @Test
+    public void testGetS3ClientWithChecksumValidationEnabled() throws Exception {
+        // Setup configuration
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_ROOT_PATH, TestUtils.TESTROOT);
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_BUCKET, "test-bucket");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_S3_CHECKSUM_VALIDATION, "true");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_KEY_ID, "test-key");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_ACCESS_KEY, "test-secret");
+
+        Config.getInstance().loadProperties();
+
+        // Mocks
+        try (MockedStatic<ApacheHttpClient> mockHttpClientStatic = mockStatic(ApacheHttpClient.class);
+             MockedStatic<S3Client> mockS3ClientStatic = mockStatic(S3Client.class)) {
+
+            // Mock ApacheHttpClient builder
+            ApacheHttpClient.Builder mockHttpBuilder = mock(ApacheHttpClient.Builder.class);
+            SdkHttpClient mockHttpClient = mock(SdkHttpClient.class);
+
+            mockHttpClientStatic.when(ApacheHttpClient::builder).thenReturn(mockHttpBuilder);
+            when(mockHttpBuilder.connectionTimeout(any())).thenReturn(mockHttpBuilder);
+            when(mockHttpBuilder.socketTimeout(any())).thenReturn(mockHttpBuilder);
+            when(mockHttpBuilder.build()).thenReturn(mockHttpClient);
+
+            // Mock S3Client builder
+            S3ClientBuilder mockS3Builder = mock(S3ClientBuilder.class);
+            S3Client mockS3Client = mock(S3Client.class);
+
+            mockS3ClientStatic.when(S3Client::builder).thenReturn(mockS3Builder);
+            when(mockS3Builder.httpClient(any(SdkHttpClient.class))).thenReturn(mockS3Builder);
+            when(mockS3Builder.region(any(Region.class))).thenReturn(mockS3Builder);
+            when(mockS3Builder.requestChecksumCalculation(any(RequestChecksumCalculation.class))).thenReturn(mockS3Builder);
+            when(mockS3Builder.responseChecksumValidation(any(ResponseChecksumValidation.class))).thenReturn(mockS3Builder);
+            when(mockS3Builder.credentialsProvider(any())).thenReturn(mockS3Builder);
+            when(mockS3Builder.build()).thenReturn(mockS3Client);
+
+            // Mock HeadBucket to pass verification
+            when(mockS3Client.headBucket(any(HeadBucketRequest.class))).thenReturn(HeadBucketResponse.builder().build());
+
+            // Execute
+            S3Client client = S3ClientFactory.getS3Client();
+
+            // Verify
+            assertNotNull(client);
+
+            // Verify checksum calculation and validation were enabled
+            verify(mockS3Builder).requestChecksumCalculation(RequestChecksumCalculation.WHEN_REQUIRED);
+            verify(mockS3Builder).responseChecksumValidation(ResponseChecksumValidation.WHEN_REQUIRED);
+        } finally {
+            // Cleanup
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_ROOT_PATH);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_BUCKET);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_S3_CHECKSUM_VALIDATION);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_KEY_ID);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_ACCESS_KEY);
+        }
+    }
+
+    @Test
+    public void testGetS3ClientWithChecksumValidationDisabled() throws Exception {
+        // Setup configuration
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_ROOT_PATH, TestUtils.TESTROOT);
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_BUCKET, "test-bucket");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_S3_CHECKSUM_VALIDATION, "false");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_KEY_ID, "test-key");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_ACCESS_KEY, "test-secret");
+
+        Config.getInstance().loadProperties();
+
+        // Mocks
+        try (MockedStatic<ApacheHttpClient> mockHttpClientStatic = mockStatic(ApacheHttpClient.class);
+             MockedStatic<S3Client> mockS3ClientStatic = mockStatic(S3Client.class)) {
+
+            // Mock ApacheHttpClient builder
+            ApacheHttpClient.Builder mockHttpBuilder = mock(ApacheHttpClient.Builder.class);
+            SdkHttpClient mockHttpClient = mock(SdkHttpClient.class);
+
+            mockHttpClientStatic.when(ApacheHttpClient::builder).thenReturn(mockHttpBuilder);
+            when(mockHttpBuilder.connectionTimeout(any())).thenReturn(mockHttpBuilder);
+            when(mockHttpBuilder.socketTimeout(any())).thenReturn(mockHttpBuilder);
+            when(mockHttpBuilder.build()).thenReturn(mockHttpClient);
+
+            // Mock S3Client builder
+            S3ClientBuilder mockS3Builder = mock(S3ClientBuilder.class);
+            S3Client mockS3Client = mock(S3Client.class);
+
+            mockS3ClientStatic.when(S3Client::builder).thenReturn(mockS3Builder);
+            when(mockS3Builder.httpClient(any(SdkHttpClient.class))).thenReturn(mockS3Builder);
+            when(mockS3Builder.region(any(Region.class))).thenReturn(mockS3Builder);
+            when(mockS3Builder.credentialsProvider(any())).thenReturn(mockS3Builder);
+            when(mockS3Builder.build()).thenReturn(mockS3Client);
+
+            // Mock HeadBucket to pass verification
+            when(mockS3Client.headBucket(any(HeadBucketRequest.class))).thenReturn(HeadBucketResponse.builder().build());
+
+            // Execute
+            S3Client client = S3ClientFactory.getS3Client();
+
+            // Verify
+            assertNotNull(client);
+
+            // Verify checksum calculation and validation were NOT called
+            verify(mockS3Builder, never()).requestChecksumCalculation(any());
+            verify(mockS3Builder, never()).responseChecksumValidation(any());
+        } finally {
+            // Cleanup
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_ROOT_PATH);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_BUCKET);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_S3_CHECKSUM_VALIDATION);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_KEY_ID);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_ACCESS_KEY);
+        }
+    }
+
+    @Test
+    public void testGetS3ClientWithChecksumValidationNotConfigured() throws Exception {
+        // Setup configuration without checksum validation parameter
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_ROOT_PATH, TestUtils.TESTROOT);
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_BUCKET, "test-bucket");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_KEY_ID, "test-key");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_ACCESS_KEY, "test-secret");
+
+        Config.getInstance().loadProperties();
+
+        // Mocks
+        try (MockedStatic<ApacheHttpClient> mockHttpClientStatic = mockStatic(ApacheHttpClient.class);
+             MockedStatic<S3Client> mockS3ClientStatic = mockStatic(S3Client.class)) {
+
+            // Mock ApacheHttpClient builder
+            ApacheHttpClient.Builder mockHttpBuilder = mock(ApacheHttpClient.Builder.class);
+            SdkHttpClient mockHttpClient = mock(SdkHttpClient.class);
+
+            mockHttpClientStatic.when(ApacheHttpClient::builder).thenReturn(mockHttpBuilder);
+            when(mockHttpBuilder.connectionTimeout(any())).thenReturn(mockHttpBuilder);
+            when(mockHttpBuilder.socketTimeout(any())).thenReturn(mockHttpBuilder);
+            when(mockHttpBuilder.build()).thenReturn(mockHttpClient);
+
+            // Mock S3Client builder
+            S3ClientBuilder mockS3Builder = mock(S3ClientBuilder.class);
+            S3Client mockS3Client = mock(S3Client.class);
+
+            mockS3ClientStatic.when(S3Client::builder).thenReturn(mockS3Builder);
+            when(mockS3Builder.httpClient(any(SdkHttpClient.class))).thenReturn(mockS3Builder);
+            when(mockS3Builder.region(any(Region.class))).thenReturn(mockS3Builder);
+            when(mockS3Builder.credentialsProvider(any())).thenReturn(mockS3Builder);
+            when(mockS3Builder.build()).thenReturn(mockS3Client);
+
+            // Mock HeadBucket to pass verification
+            when(mockS3Client.headBucket(any(HeadBucketRequest.class))).thenReturn(HeadBucketResponse.builder().build());
+
+            // Execute
+            S3Client client = S3ClientFactory.getS3Client();
+
+            // Verify
+            assertNotNull(client);
+
+            // Verify checksum calculation and validation were NOT called (default behavior)
+            verify(mockS3Builder, never()).requestChecksumCalculation(any());
+            verify(mockS3Builder, never()).responseChecksumValidation(any());
+        } finally {
+            // Cleanup
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_ROOT_PATH);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_BUCKET);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_KEY_ID);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_AWS_ACCESS_KEY);
+        }
     }
 }
