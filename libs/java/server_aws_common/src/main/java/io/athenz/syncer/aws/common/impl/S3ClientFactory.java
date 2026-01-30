@@ -26,6 +26,8 @@ import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.awssdk.core.checksums.RequestChecksumCalculation;
+import software.amazon.awssdk.core.checksums.ResponseChecksumValidation;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
@@ -101,6 +103,15 @@ public class S3ClientFactory {
         S3ClientBuilder s3ClientBuilder = S3Client.builder()
                 .httpClient(apacheHttpClient)
                 .region(getRegion());
+
+        // Enable checksum calculation and validation if configured
+        final String checksumValidation = Config.getInstance().getConfigParam(Config.SYNC_CFG_PARAM_AWS_S3_CHECKSUM_VALIDATION);
+        if (!Config.isEmpty(checksumValidation) && Boolean.parseBoolean(checksumValidation)) {
+            s3ClientBuilder
+                    .requestChecksumCalculation(RequestChecksumCalculation.WHEN_REQUIRED)
+                    .responseChecksumValidation(ResponseChecksumValidation.WHEN_REQUIRED);
+            LOGGER.debug("S3 checksum calculation and validation enabled");
+        }
 
         final String awsS3Endpoint = Config.getInstance().getConfigParam(Config.SYNC_CFG_PARAM_AWS_S3_ENDPOINT);
         if (!Config.isEmpty(awsS3Endpoint)) {
