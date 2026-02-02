@@ -20,13 +20,16 @@ package com.yahoo.athenz.zms_aws_domain_syncer;
 
 import com.yahoo.athenz.common.server.store.impl.ZMSFileChangeLogStoreCommon;
 import com.yahoo.athenz.common.server.store.impl.ZMSFileChangeLogStoreSync;
+import com.yahoo.athenz.common.server.util.DomainValidator;
 import com.yahoo.athenz.zms.JWSDomain;
 import com.yahoo.athenz.zms.SignedDomain;
 import io.athenz.syncer.common.zms.Config;
-import io.athenz.syncer.common.zms.DomainValidator;
 import io.athenz.syncer.common.zms.ZmsReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.security.PublicKey;
+import java.util.function.Function;
 
 public class SyncerDataStore {
 
@@ -66,23 +69,6 @@ public class SyncerDataStore {
     }
 
     boolean processUpdates() {
-        return syncStore.processUpdates(zmsReader.getZmsClient(), true, new ZMSFileChangeLogStoreSync.DomainValidator() {
-            @Override
-            public boolean validate(JWSDomain domain) {
-                DomainValidator validator = zmsReader.getDomainValidator();
-                if (!validator.validateJWSDomain(domain)) {
-                    LOGGER.error("Validation failed for JWS domain");
-                    return false;
-                }
-                return true;
-            }
-
-            @Override
-            public boolean validate(SignedDomain domain) {
-                // Not supported in this syncer configuration
-                LOGGER.error("SignedDomain validation not supported");
-                return false;
-            }
-        });
+        return syncStore.processUpdates(zmsReader.getZmsClient(), true, zmsReader.getDomainValidator(), Config.getInstance()::getZmsPublicKey);
     }
 }

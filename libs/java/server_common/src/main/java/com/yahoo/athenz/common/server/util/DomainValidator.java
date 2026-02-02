@@ -16,7 +16,7 @@
  *
  */
 
-package io.athenz.syncer.common.zms;
+package com.yahoo.athenz.common.server.util;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -62,11 +62,10 @@ public class DomainValidator {
         return domainData != null ? domainData.getName() : null;
     }
 
-    public boolean validateJWSDomain(JWSDomain jwsDomain) {
+    public boolean validateJWSDomain(JWSDomain jwsDomain, Function<String, PublicKey> keyProvider) {
 
-        Function<String, PublicKey> keyGetter = Config.getInstance()::getZmsPublicKey;
         boolean result = Crypto.validateJWSDocument(jwsDomain.getProtectedHeader(), jwsDomain.getPayload(),
-                jwsDomain.getSignature(), keyGetter);
+                jwsDomain.getSignature(), keyProvider);
 
         if (!result) {
             LOGGER.error("domain={} signature validation failed", extractDomainName(jwsDomain));

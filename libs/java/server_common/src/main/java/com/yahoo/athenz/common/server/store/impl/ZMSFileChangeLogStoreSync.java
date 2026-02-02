@@ -16,15 +16,15 @@
 
 package com.yahoo.athenz.common.server.store.impl;
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yahoo.athenz.common.server.util.DomainValidator;
 import com.yahoo.athenz.zms.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Base64;
+import java.security.PublicKey;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Common logic for syncing domain data from ZMS to local file storage.
@@ -35,32 +35,22 @@ public class ZMSFileChangeLogStoreSync {
     private static final Logger LOGGER = LoggerFactory.getLogger(ZMSFileChangeLogStoreSync.class);
 
     private final ZMSFileChangeLogStoreCommon storeCommon;
-    private final ObjectMapper jsonMapper;
-    private final Base64.Decoder base64Decoder;
-
-    public interface DomainValidator {
-        boolean validate(JWSDomain domain);
-        boolean validate(SignedDomain domain);
-    }
 
     public ZMSFileChangeLogStoreSync(ZMSFileChangeLogStoreCommon storeCommon) {
         this.storeCommon = storeCommon;
-        this.jsonMapper = new ObjectMapper();
-        this.jsonMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-        this.base64Decoder = Base64.getUrlDecoder();
     }
 
-    public boolean processUpdates(ZMSClient zmsClient, boolean jwsDomainSupport, DomainValidator validator) {
+    public boolean processUpdates(ZMSClient zmsClient, boolean jwsDomainSupport, DomainValidator validator, Function<String, PublicKey> keyProvider) {
         StringBuilder lastModTimeBuffer = new StringBuilder();
 
         if (jwsDomainSupport) {
-            return processJWSDomainUpdates(zmsClient, validator, lastModTimeBuffer);
+            return processJWSDomainUpdates(zmsClient, validator, keyProvider, lastModTimeBuffer);
         } else {
-            return processSignedDomainUpdates(zmsClient, validator, lastModTimeBuffer);
+            return processSignedDomainUpdates(zmsClient, validator, keyProvider, lastModTimeBuffer);
         }
     }
 
-    private boolean processJWSDomainUpdates(ZMSClient zmsClient, DomainValidator validator, StringBuilder lastModTimeBuffer) {
+    private boolean processJWSDomainUpdates(ZMSClient zmsClient, DomainValidator validator, Function<String, PublicKey> keyProvider, StringBuilder lastModTimeBuffer) {
         List<JWSDomain> updatedDomains = storeCommon.getUpdatedJWSDomains(zmsClient, lastModTimeBuffer);
 
         if (updatedDomains == null) {
@@ -71,7 +61,7 @@ public class ZMSFileChangeLogStoreSync {
         if (!updatedDomains.isEmpty()) {
             result = false;
             for (JWSDomain domain : updatedDomains) {
-                if (processJWSDomain(domain, validator)) {
+                if (processJWSDomain(domain, validator, keyProvider)) {
                     result = true;
                 }
             }
@@ -84,17 +74,13 @@ public class ZMSFileChangeLogStoreSync {
         return true;
     }
 
-    private boolean processJWSDomain(JWSDomain jwsDomain, DomainValidator validator) {
-        if (!validator.validate(jwsDomain)) {
+    private boolean processJWSDomain(JWSDomain jwsDomain, DomainValidator validator, Function<String, PublicKey> keyProvider) {
+        if (!validator.validateJWSDomain(jwsDomain, keyProvider)) {
             return false;
         }
 
-        DomainData domainData;
-        try {
-            byte[] payload = base64Decoder.decode(jwsDomain.getPayload());
-            domainData = jsonMapper.readValue(payload, DomainData.class);
-        } catch (Exception ex) {
-            LOGGER.error("Unable to parse jws domain payload", ex);
+        DomainData domainData = validator.getDomainData(jwsDomain);
+        if (domainData == null) {
             return false;
         }
 
@@ -110,7 +96,7 @@ public class ZMSFileChangeLogStoreSync {
         return true;
     }
 
-    private boolean processSignedDomainUpdates(ZMSClient zmsClient, DomainValidator validator, StringBuilder lastModTimeBuffer) {
+    private boolean processSignedDomainUpdates(ZMSClient zmsClient, DomainValidator validator, Function<String, PublicKey> keyProvider, StringBuilder lastModTimeBuffer) {
         SignedDomains updatedDomains = storeCommon.getUpdatedSignedDomains(zmsClient, lastModTimeBuffer);
 
         if (updatedDomains == null) {
@@ -122,7 +108,11 @@ public class ZMSFileChangeLogStoreSync {
         if (domains != null && !domains.isEmpty()) {
             result = false;
             for (SignedDomain domain : domains) {
-                if (processSignedDomain(domain, validator)) {
+                // TODO: Need validation logic for SignedDomain in DomainValidator if we want to use it here.
+                // Currently DomainValidator only supports JWSDomain validation logic via Crypto.validateJWSDocument.
+                // For now, this path is not used by SyncerDataStore which uses JWS.
+                // If DataStore wants to use this, we need to add SignedDomain validation to DomainValidator.
+                if (processSignedDomain(domain)) {
                     result = true;
                 }
             }
@@ -135,10 +125,8 @@ public class ZMSFileChangeLogStoreSync {
         return true;
     }
 
-    private boolean processSignedDomain(SignedDomain signedDomain, DomainValidator validator) {
-        if (!validator.validate(signedDomain)) {
-            return false;
-        }
+    private boolean processSignedDomain(SignedDomain signedDomain) {
+        // Validation logic needs to be passed or added to DomainValidator
 
         DomainData domainData = signedDomain.getDomain();
         String domainName = domainData.getName();

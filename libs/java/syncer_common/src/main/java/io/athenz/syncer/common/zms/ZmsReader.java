@@ -20,14 +20,17 @@ package io.athenz.syncer.common.zms;
 
 import com.oath.auth.KeyRefresher;
 import com.oath.auth.Utils;
+import com.yahoo.athenz.common.server.util.DomainValidator;
 import com.yahoo.athenz.zms.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.SSLContext;
+import java.security.PublicKey;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 public class ZmsReader {
 
@@ -116,7 +119,8 @@ public class ZmsReader {
 
         Map<String, List<String>> responseHeaders = new HashMap<>();
         JWSDomain jwsDomain = zmsClient.getJWSDomain(domainName, null, responseHeaders);
-        if (jwsDomain != null && !domainValidator.validateJWSDomain(jwsDomain)) {
+        Function<String, PublicKey> keyGetter = Config.getInstance()::getZmsPublicKey;
+        if (jwsDomain != null && !domainValidator.validateJWSDomain(jwsDomain, keyGetter)) {
             jwsDomain = null;
         }
         return jwsDomain;

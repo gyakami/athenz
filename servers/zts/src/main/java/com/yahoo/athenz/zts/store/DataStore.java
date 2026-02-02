@@ -28,6 +28,7 @@ import com.yahoo.athenz.common.server.key.PubKeysProvider;
 import com.yahoo.athenz.common.server.store.ChangeLogStore;
 import com.yahoo.athenz.common.server.util.ConfigProperties;
 import com.yahoo.athenz.common.server.util.AuthzHelper;
+import com.yahoo.athenz.common.server.util.DomainValidator;
 import com.yahoo.athenz.common.server.util.ResourceUtils;
 import com.yahoo.athenz.common.utils.SignUtils;
 import com.yahoo.athenz.zms.*;
@@ -92,6 +93,7 @@ public class DataStore implements DataCacheProvider, RolesProvider, PubKeysProvi
     final JWKList ztsJWKListStrictRFC;
     private final ObjectMapper jsonMapper;
     private final Base64.Decoder base64Decoder;
+    private final DomainValidator domainValidator;
     protected SecretKey serviceCredsEncryptionKey = null;
     protected String serviceCredsEncryptionAlgorithm = null;
 
@@ -199,6 +201,7 @@ public class DataStore implements DataCacheProvider, RolesProvider, PubKeysProvi
         jsonMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
         base64Decoder = Base64.getUrlDecoder();
+        domainValidator = new DomainValidator();
     }
 
     boolean processLocalSignedDomain(String domainName) {
@@ -441,8 +444,7 @@ public class DataStore implements DataCacheProvider, RolesProvider, PubKeysProvi
     boolean validateJWSDomain(final String domainName, JWSDomain jwsDomain) {
 
         Function<String, PublicKey> keyGetter = zmsPublicKeyCache::getIfPresent;
-        boolean result = Crypto.validateJWSDocument(jwsDomain.getProtectedHeader(), jwsDomain.getPayload(),
-                jwsDomain.getSignature(), keyGetter);
+        boolean result = domainValidator.validateJWSDomain(jwsDomain, keyGetter);
 
         if (!result) {
             metric.increment("domain_validation_failure", domainName);
@@ -454,12 +456,9 @@ public class DataStore implements DataCacheProvider, RolesProvider, PubKeysProvi
 
     public boolean processJWSDomain(JWSDomain jwsDomain, boolean saveInStore) {
 
-        DomainData domainData;
-        try {
-            byte[] payload = base64Decoder.decode(jwsDomain.getPayload());
-            domainData = jsonMapper.readValue(payload, DomainData.class);
-        } catch (Exception ex) {
-            LOGGER.error("Unable to parse jws domain", ex);
+        DomainData domainData = domainValidator.getDomainData(jwsDomain);
+        if (domainData == null) {
+            LOGGER.error("Unable to parse jws domain");
             return false;
         }
 
