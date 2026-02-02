@@ -18,18 +18,17 @@
 
 package com.yahoo.athenz.zms_aws_domain_syncer;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.yahoo.athenz.auth.util.Crypto;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yahoo.athenz.common.server.store.impl.ZMSFileChangeLogStoreCommon;
 import com.yahoo.athenz.zms.DomainData;
 import com.yahoo.athenz.zms.JWSDomain;
 import io.athenz.syncer.common.zms.Config;
+import io.athenz.syncer.common.zms.DomainValidator;
 import io.athenz.syncer.common.zms.ZmsReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Base64;
 import java.util.List;
 import java.util.Set;
 
@@ -38,7 +37,6 @@ public class SyncerDataStore {
     private static final Logger LOGGER = LoggerFactory.getLogger(SyncerDataStore.class);
     private final ZmsReader zmsReader;
     private ZMSFileChangeLogStoreCommon changeLogStoreCommon;
-    private final Base64.Decoder base64Decoder = Base64.getUrlDecoder();
     private final ObjectMapper jsonMapper = new ObjectMapper();
 
     public SyncerDataStore(ZmsReader zmsReader) {
@@ -100,16 +98,15 @@ public class SyncerDataStore {
     }
 
     boolean processJWSDomain(JWSDomain jwsDomain) {
-        if (!validateJWSDomain(jwsDomain)) {
+        DomainValidator domainValidator = zmsReader.getDomainValidator();
+        if (!domainValidator.validateJWSDomain(jwsDomain)) {
+            LOGGER.error("Validation failed for JWS domain");
             return false;
         }
 
-        DomainData domainData;
-        try {
-             byte[] payload = base64Decoder.decode(jwsDomain.getPayload());
-             domainData = jsonMapper.readValue(payload, DomainData.class);
-        } catch (Exception ex) {
-            LOGGER.error("Unable to parse jws domain payload", ex);
+        DomainData domainData = domainValidator.getDomainData(jwsDomain);
+        if (domainData == null) {
+            LOGGER.error("Unable to parse jws domain payload");
             return false;
         }
 
@@ -123,20 +120,6 @@ public class SyncerDataStore {
 
         changeLogStoreCommon.saveLocalDomain(domainName, jwsDomain);
         return true;
-    }
-
-    boolean validateJWSDomain(JWSDomain jwsDomain) {
-        boolean result = Crypto.validateJWSDocument(
-                jwsDomain.getProtectedHeader(),
-                jwsDomain.getPayload(),
-                jwsDomain.getSignature(),
-                keyId -> Config.getInstance().getZmsPublicKey(keyId)
-        );
-
-        if (!result) {
-            LOGGER.error("Validation failed for JWS domain");
-        }
-        return result;
     }
 
     boolean processDeletes() {

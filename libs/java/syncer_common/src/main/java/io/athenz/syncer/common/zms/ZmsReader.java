@@ -129,4 +129,8 @@ public class ZmsReader {
     public ZMSClient getZmsClient() {
         return zmsClient;
     }
+
+    public DomainValidator getDomainValidator() {
+        return domainValidator;
+    }
 }
