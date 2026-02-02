@@ -18,26 +18,21 @@
 
 package com.yahoo.athenz.zms_aws_domain_syncer;
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yahoo.athenz.common.server.store.impl.ZMSFileChangeLogStoreCommon;
-import com.yahoo.athenz.zms.DomainData;
+import com.yahoo.athenz.common.server.store.impl.ZMSFileChangeLogStoreSync;
 import com.yahoo.athenz.zms.JWSDomain;
+import com.yahoo.athenz.zms.SignedDomain;
 import io.athenz.syncer.common.zms.Config;
 import io.athenz.syncer.common.zms.DomainValidator;
 import io.athenz.syncer.common.zms.ZmsReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.List;
-import java.util.Set;
-
 public class SyncerDataStore {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SyncerDataStore.class);
     private final ZmsReader zmsReader;
-    private ZMSFileChangeLogStoreCommon changeLogStoreCommon;
-    private final ObjectMapper jsonMapper = new ObjectMapper();
+    private final ZMSFileChangeLogStoreSync syncStore;
 
     public SyncerDataStore(ZmsReader zmsReader) {
         this.zmsReader = zmsReader;
@@ -47,23 +42,22 @@ public class SyncerDataStore {
             rootDir = rootPath + "/var/athenz/syncer/data";
         }
         LOGGER.info("SyncerDataStore using root directory: {}", rootDir);
-        this.changeLogStoreCommon = new ZMSFileChangeLogStoreCommon(rootDir);
-
-        jsonMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        ZMSFileChangeLogStoreCommon storeCommon = new ZMSFileChangeLogStoreCommon(rootDir);
+        this.syncStore = new ZMSFileChangeLogStoreSync(storeCommon);
     }
 
     public boolean process() {
         LOGGER.info("Starting local file sync process...");
         boolean success = true;
 
-        // 1. Process updates (Always JWS)
+        // 1. Process updates (JWS only)
         if (!processUpdates()) {
             LOGGER.error("Failed to process updates");
             success = false;
         }
 
         // 2. Process deletes
-        if (!processDeletes()) {
+        if (!syncStore.processDeletes(zmsReader.getZmsClient())) {
             LOGGER.error("Failed to process deletes");
             success = false;
         }
@@ -72,70 +66,23 @@ public class SyncerDataStore {
     }
 
     boolean processUpdates() {
-        StringBuilder lastModTimeBuffer = new StringBuilder();
-        List<JWSDomain> updatedDomains = changeLogStoreCommon.getUpdatedJWSDomains(zmsReader.getZmsClient(), lastModTimeBuffer);
-
-        if (updatedDomains == null) {
-            // If domains is null, it indicates a failure in fetching updates
-            return false;
-        }
-
-        boolean result = true;
-        if (!updatedDomains.isEmpty()) {
-            result = false;
-            for (JWSDomain domain : updatedDomains) {
-                if (processJWSDomain(domain)) {
-                    result = true;
+        return syncStore.processUpdates(zmsReader.getZmsClient(), true, new ZMSFileChangeLogStoreSync.DomainValidator() {
+            @Override
+            public boolean validate(JWSDomain domain) {
+                DomainValidator validator = zmsReader.getDomainValidator();
+                if (!validator.validateJWSDomain(domain)) {
+                    LOGGER.error("Validation failed for JWS domain");
+                    return false;
                 }
+                return true;
             }
-        }
 
-        if (result && lastModTimeBuffer.length() > 0) {
-            changeLogStoreCommon.setLastModificationTimestamp(lastModTimeBuffer.toString());
-        }
-
-        return true;
-    }
-
-    boolean processJWSDomain(JWSDomain jwsDomain) {
-        DomainValidator domainValidator = zmsReader.getDomainValidator();
-        if (!domainValidator.validateJWSDomain(jwsDomain)) {
-            LOGGER.error("Validation failed for JWS domain");
-            return false;
-        }
-
-        DomainData domainData = domainValidator.getDomainData(jwsDomain);
-        if (domainData == null) {
-            LOGGER.error("Unable to parse jws domain payload");
-            return false;
-        }
-
-        String domainName = domainData.getName();
-        // Check if disabled
-        if (domainData.getEnabled() == Boolean.FALSE) {
-             changeLogStoreCommon.removeLocalDomain(domainName);
-             changeLogStoreCommon.saveLocalDomain(domainName, jwsDomain);
-             return true;
-        }
-
-        changeLogStoreCommon.saveLocalDomain(domainName, jwsDomain);
-        return true;
-    }
-
-    boolean processDeletes() {
-        Set<String> serverDomains = changeLogStoreCommon.getServerDomainList(zmsReader.getZmsClient());
-        if (serverDomains == null) {
-            LOGGER.error("Unable to fetch server domain list");
-            return false;
-        }
-
-        List<String> localDomains = changeLogStoreCommon.getLocalDomainList();
-        for (String localDomain : localDomains) {
-            if (!serverDomains.contains(localDomain)) {
-                LOGGER.info("Deleting local domain: {}", localDomain);
-                changeLogStoreCommon.removeLocalDomain(localDomain);
+            @Override
+            public boolean validate(SignedDomain domain) {
+                // Not supported in this syncer configuration
+                LOGGER.error("SignedDomain validation not supported");
+                return false;
             }
-        }
-        return true;
+        });
     }
 }
