@@ -36,7 +36,13 @@ public class AwsZmsSyncerHelper {
     public boolean run() {
         try {
             setRequiredProperties();
-            return CloudZmsSyncer.launchSyncer(createCloudZmsSyncer());
+            CloudZmsSyncer cloudZmsSyncer = createCloudZmsSyncer();
+            boolean cloudResult = CloudZmsSyncer.launchSyncer(cloudZmsSyncer);
+
+            SyncerDataStore syncerDataStore = new SyncerDataStore(cloudZmsSyncer.getZmsReader());
+            boolean localResult = syncerDataStore.process();
+
+            return cloudResult && localResult;
         } catch (Exception e) {
             LOG.error("zms domain syncer failure", e);
             return false;

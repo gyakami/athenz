@@ -57,6 +57,7 @@ public class Config {
     public static final String SYNC_CFG_PARAM_DEBUG = "debug";
     public static final String SYNC_CFG_PARAM_ROOT_PATH = "root_path";
     public static final String SYNC_CFG_PARAM_STATE_PATH = "state_path";
+    public static final String SYNC_CFG_PARAM_LOCAL_DOMAIN_ROOT = "local_domain_root";
     static final String SYNC_CFG_PARAM_SLEEP_INTERVAL = "sleep_interval";
     public static final String SYNC_CFG_PARAM_AWS_BUCKET = "aws_bucket";
     public static final String SYNC_CFG_PARAM_AWS_SSE_ALGORITHM = "aws_sse_algorithm";
@@ -84,6 +85,7 @@ public class Config {
             SYNC_CFG_PARAM_DEBUG,
             SYNC_CFG_PARAM_ROOT_PATH,
             SYNC_CFG_PARAM_STATE_PATH,
+            SYNC_CFG_PARAM_LOCAL_DOMAIN_ROOT,
             SYNC_CFG_PARAM_SLEEP_INTERVAL,
             SYNC_CFG_PARAM_AWS_BUCKET,
             SYNC_CFG_PARAM_AWS_CONNECT_TIMEOUT,

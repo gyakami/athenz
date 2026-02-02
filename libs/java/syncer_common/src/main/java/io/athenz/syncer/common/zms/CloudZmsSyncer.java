@@ -424,4 +424,8 @@ public class CloudZmsSyncer {
         }
         return syncStatus;
     }
+
+    public ZmsReader getZmsReader() {
+        return zmsReader;
+    }
 }

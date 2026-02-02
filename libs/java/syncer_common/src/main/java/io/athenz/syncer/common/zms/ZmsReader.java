@@ -125,4 +125,8 @@ public class ZmsReader {
     public DomainData getDomainData(JWSDomain jwsDomain) {
         return domainValidator.getDomainData(jwsDomain);
     }
+
+    public ZMSClient getZmsClient() {
+        return zmsClient;
+    }
 }
