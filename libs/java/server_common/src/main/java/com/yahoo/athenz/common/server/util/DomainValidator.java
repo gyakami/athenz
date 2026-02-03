@@ -21,8 +21,10 @@ package com.yahoo.athenz.common.server.util;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yahoo.athenz.auth.util.Crypto;
+import com.yahoo.athenz.common.utils.SignUtils;
 import com.yahoo.athenz.zms.DomainData;
 import com.yahoo.athenz.zms.JWSDomain;
+import com.yahoo.athenz.zms.SignedDomain;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,5 +77,38 @@ public class DomainValidator {
         // we also want to validate that we have a valid domain payload
 
         return getDomainData(jwsDomain) != null;
+    }
+
+    public boolean validateSignedDomain(SignedDomain signedDomain, Function<String, PublicKey> keyProvider) {
+
+        DomainData domainData = signedDomain.getDomain();
+        String keyId = signedDomain.getKeyId();
+        String signature = signedDomain.getSignature();
+        String domainName = domainData.getName();
+
+        PublicKey zmsKey = keyProvider.apply(keyId == null ? "0" : keyId);
+        if (zmsKey == null) {
+            LOGGER.error("validateSignedDomain: ZMS Public Key id={} not available", keyId);
+            return false;
+        }
+
+        boolean result = false;
+        try {
+            result = Crypto.verify(SignUtils.asCanonicalString(domainData), zmsKey, signature);
+        } catch (Exception ex) {
+            LOGGER.error("validateSignedDomain: Domain={} signature validation exception",
+                    domainName, ex);
+        }
+
+        if (!result) {
+            LOGGER.error("validateSignedDomain: Domain={} signature validation failed", domainName);
+            LOGGER.error("validateSignedDomain: Signed Domain Data: {}", SignUtils.asCanonicalString(domainData));
+        }
+
+        return result;
+    }
+
+    public DomainData getDomainData(SignedDomain signedDomain) {
+        return signedDomain != null ? signedDomain.getDomain() : null;
     }
 }

@@ -108,11 +108,7 @@ public class ZMSFileChangeLogStoreSync {
         if (domains != null && !domains.isEmpty()) {
             result = false;
             for (SignedDomain domain : domains) {
-                // TODO: Need validation logic for SignedDomain in DomainValidator if we want to use it here.
-                // Currently DomainValidator only supports JWSDomain validation logic via Crypto.validateJWSDocument.
-                // For now, this path is not used by SyncerDataStore which uses JWS.
-                // If DataStore wants to use this, we need to add SignedDomain validation to DomainValidator.
-                if (processSignedDomain(domain)) {
+                if (processSignedDomain(domain, validator, keyProvider)) {
                     result = true;
                 }
             }
@@ -125,10 +121,12 @@ public class ZMSFileChangeLogStoreSync {
         return true;
     }
 
-    private boolean processSignedDomain(SignedDomain signedDomain) {
-        // Validation logic needs to be passed or added to DomainValidator
+    private boolean processSignedDomain(SignedDomain signedDomain, DomainValidator validator, Function<String, PublicKey> keyProvider) {
+        if (!validator.validateSignedDomain(signedDomain, keyProvider)) {
+            return false;
+        }
 
-        DomainData domainData = signedDomain.getDomain();
+        DomainData domainData = validator.getDomainData(signedDomain);
         String domainName = domainData.getName();
 
         // Check if disabled

@@ -222,29 +222,12 @@ public class DataStore implements DataCacheProvider, RolesProvider, PubKeysProvi
 
     boolean validateSignedDomain(SignedDomain signedDomain) {
 
-        DomainData domainData = signedDomain.getDomain();
-        String keyId = signedDomain.getKeyId();
-        String signature = signedDomain.getSignature();
-
-        PublicKey zmsKey = zmsPublicKeyCache.getIfPresent(keyId == null ? "0" : keyId);
-        if (zmsKey == null) {
-            metric.increment("domain_validation_failure", domainData.getName());
-            LOGGER.error("validateSignedDomain: ZMS Public Key id={} not available", keyId);
-            return false;
-        }
-
-        boolean result = false;
-        try {
-            result = Crypto.verify(SignUtils.asCanonicalString(domainData), zmsKey, signature);
-        } catch (Exception ex) {
-            LOGGER.error("validateSignedDomain: Domain={} signature validation exception",
-                    domainData.getName(), ex);
-        }
+        String domainName = signedDomain.getDomain().getName();
+        Function<String, PublicKey> keyGetter = zmsPublicKeyCache::getIfPresent;
+        boolean result = domainValidator.validateSignedDomain(signedDomain, keyGetter);
 
         if (!result) {
-            metric.increment("domain_validation_failure", domainData.getName());
-            LOGGER.error("validateSignedDomain: Domain={} signature validation failed", domainData.getName());
-            LOGGER.error("validateSignedDomain: Signed Domain Data: {}", SignUtils.asCanonicalString(domainData));
+            metric.increment("domain_validation_failure", domainName);
         }
 
         return result;

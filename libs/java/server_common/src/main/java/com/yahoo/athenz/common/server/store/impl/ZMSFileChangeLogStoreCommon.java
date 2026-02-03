@@ -28,11 +28,12 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.*;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.*;
 
 public class ZMSFileChangeLogStoreCommon {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ZMSFileChangeLogStoreCommon.class);
+    private static final String ZTS_PROP_ZMS_DOMAIN_FETCH_THREADS = "athenz.zts.zms_domain_fetch_threads";
 
     File rootDir;
     ObjectMapper jsonMapper;
@@ -47,6 +48,7 @@ public class ZMSFileChangeLogStoreCommon {
 
     boolean requestConditions;
     int maxRateLimitRetryCount = 101;
+    ExecutorService executorService;
 
     public ZMSFileChangeLogStoreCommon(final String rootDirectory) {
 
@@ -91,6 +93,15 @@ public class ZMSFileChangeLogStoreCommon {
             for (String domain : localDomains) {
                 delete(domain);
             }
+        }
+
+        initExecutorService();
+    }
+
+    private void initExecutorService() {
+        int fetchThreads = Integer.parseInt(System.getProperty(ZTS_PROP_ZMS_DOMAIN_FETCH_THREADS, "0"));
+        if (fetchThreads > 0) {
+            executorService = Executors.newFixedThreadPool(fetchThreads);
         }
     }
 
@@ -301,94 +312,129 @@ public class ZMSFileChangeLogStoreCommon {
     List<SignedDomain> getSignedDomainList(ZMSClient zmsClient, SignedDomains domainList) {
 
         List<SignedDomain> domains = new ArrayList<>();
+        List<Callable<SignedDomain>> tasks = new ArrayList<>();
+
         for (SignedDomain domain : domainList.getDomains()) {
 
             final String domainName = domain.getDomain().getName();
-
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.debug("getSignedDomainList: fetching domain {}", domainName);
             }
 
-            // we're going to retry up to 100 times in case of rate limiting
-            // from ZMS Server. If not able to retrieve after so many times
-            // we'll pick up the change again during our full sync time
-
-            for (int count = 1; count < maxRateLimitRetryCount; count++) {
-                try {
-
-                    SignedDomains singleDomain = makeSignedDomainsCall(zmsClient, domainName, null, null, null);
-
-                    if (singleDomain != null && !singleDomain.getDomains().isEmpty()) {
-                        domains.addAll(singleDomain.getDomains());
-                    }
-
-                    break;
-
-                } catch (ZMSClientException ex) {
-
-                    LOGGER.error("Error fetching domain {} from ZMS: {}", domainName, ex.getMessage());
-
-                    // if we get a rate limiting failure, we're going to sleep
-                    // for some period and retry our operation again
-
-                    if (ex.getCode() != ZMSClientException.TOO_MANY_REQUESTS) {
-                        break;
-                    }
-
-                    try {
-                        Thread.sleep(randomSleepForRetry(count));
-                    } catch (InterruptedException ignored) {
-                    }
+            if (executorService != null) {
+                tasks.add(() -> fetchSignedDomain(zmsClient, domainName));
+            } else {
+                SignedDomain singleDomain = fetchSignedDomain(zmsClient, domainName);
+                if (singleDomain != null) {
+                    domains.add(singleDomain);
                 }
             }
         }
+
+        if (executorService != null && !tasks.isEmpty()) {
+            try {
+                List<Future<SignedDomain>> futures = executorService.invokeAll(tasks);
+                for (Future<SignedDomain> future : futures) {
+                    SignedDomain domain = future.get();
+                    if (domain != null) {
+                        domains.add(domain);
+                    }
+                }
+            } catch (Exception ex) {
+                LOGGER.error("Error processing parallel domain fetch", ex);
+            }
+        }
+
         return domains;
+    }
+
+    SignedDomain fetchSignedDomain(ZMSClient zmsClient, String domainName) {
+
+        // we're going to retry up to 100 times in case of rate limiting
+        // from ZMS Server. If not able to retrieve after so many times
+        // we'll pick up the change again during our full sync time
+
+        for (int count = 1; count < maxRateLimitRetryCount; count++) {
+            try {
+                SignedDomains singleDomain = makeSignedDomainsCall(zmsClient, domainName, null, null, null);
+                if (singleDomain != null && !singleDomain.getDomains().isEmpty()) {
+                    return singleDomain.getDomains().get(0);
+                }
+                break;
+            } catch (ZMSClientException ex) {
+                LOGGER.error("Error fetching domain {} from ZMS: {}", domainName, ex.getMessage());
+                if (ex.getCode() != ZMSClientException.TOO_MANY_REQUESTS) {
+                    break;
+                }
+                try {
+                    Thread.sleep(randomSleepForRetry(count));
+                } catch (InterruptedException ignored) {
+                }
+            }
+        }
+        return null;
     }
 
     List<JWSDomain> getJWSDomainList(ZMSClient zmsClient, SignedDomains domainList) {
 
         List<JWSDomain> domains = new ArrayList<>();
+        List<Callable<JWSDomain>> tasks = new ArrayList<>();
+
         for (SignedDomain domain : domainList.getDomains()) {
 
             final String domainName = domain.getDomain().getName();
-
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.debug("getJWSDomainList: fetching domain {}", domainName);
             }
 
-            // we're going to retry up to 100 times in case of rate limiting
-            // from ZMS Server. If not able to retrieve after so many times
-            // we'll pick up the change again during our full sync time
-
-            for (int count = 1; count < maxRateLimitRetryCount; count++) {
-                try {
-
-                    JWSDomain jwsDomain = zmsClient.getJWSDomain(domainName, null, null);
-                    if (jwsDomain != null) {
-                        domains.add(jwsDomain);
-                    }
-
-                    break;
-
-                } catch (ZMSClientException ex) {
-
-                    LOGGER.error("Error fetching domain {} from ZMS: {}", domainName, ex.getMessage());
-
-                    // if we get a rate limiting failure, we're going to sleep
-                    // for some period and retry our operation again
-
-                    if (ex.getCode() != ZMSClientException.TOO_MANY_REQUESTS) {
-                        break;
-                    }
-
-                    try {
-                        Thread.sleep(randomSleepForRetry(count));
-                    } catch (InterruptedException ignored) {
-                    }
+            if (executorService != null) {
+                tasks.add(() -> fetchJWSDomain(zmsClient, domainName));
+            } else {
+                JWSDomain jwsDomain = fetchJWSDomain(zmsClient, domainName);
+                if (jwsDomain != null) {
+                    domains.add(jwsDomain);
                 }
             }
         }
+
+        if (executorService != null && !tasks.isEmpty()) {
+            try {
+                List<Future<JWSDomain>> futures = executorService.invokeAll(tasks);
+                for (Future<JWSDomain> future : futures) {
+                    JWSDomain domain = future.get();
+                    if (domain != null) {
+                        domains.add(domain);
+                    }
+                }
+            } catch (Exception ex) {
+                LOGGER.error("Error processing parallel domain fetch", ex);
+            }
+        }
+
         return domains;
+    }
+
+    JWSDomain fetchJWSDomain(ZMSClient zmsClient, String domainName) {
+
+        // we're going to retry up to 100 times in case of rate limiting
+        // from ZMS Server. If not able to retrieve after so many times
+        // we'll pick up the change again during our full sync time
+
+        for (int count = 1; count < maxRateLimitRetryCount; count++) {
+            try {
+                return zmsClient.getJWSDomain(domainName, null, null);
+            } catch (ZMSClientException ex) {
+                LOGGER.error("Error fetching domain {} from ZMS: {}", domainName, ex.getMessage());
+                if (ex.getCode() != ZMSClientException.TOO_MANY_REQUESTS) {
+                    break;
+                }
+                try {
+                    Thread.sleep(randomSleepForRetry(count));
+                } catch (InterruptedException ignored) {
+                }
+            }
+        }
+        return null;
     }
 
     /**
