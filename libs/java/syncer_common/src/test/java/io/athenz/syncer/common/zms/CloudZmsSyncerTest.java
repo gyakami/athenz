@@ -484,6 +484,48 @@ public class CloudZmsSyncerTest {
     }
 
     @Test
+    public void testSyncDomainsParallel() throws Exception {
+        System.out.println("testSyncDomainsParallel");
+        // set state file that will cause some domains to be deleted
+        Config.getInstance().loadConfigParams();
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS, "4");
+        Config.getInstance().loadConfigParams();
+
+        try {
+            DomainValidator validator = Mockito.mock(DomainValidator.class);
+            when(validator.validateJWSDomain(any())).thenReturn(true);
+            DomainValidator domainValidator = new DomainValidator();
+            when(validator.getDomainData(any())).thenAnswer(invocationOnMock -> {
+                Object[] arguments = invocationOnMock.getArguments();
+                return domainValidator.getDomainData((JWSDomain) arguments[0]);
+            });
+
+            CloudDomainStore cloudDomainStore = Mockito.mock(CloudDomainStore.class);
+            ZmsReader zmsReader = new ZmsReader(mockZMSClt, validator);
+
+            S3Client s3Client = Mockito.mock(S3Client.class);
+            StateFileBuilder stateFileBuilder = Mockito.mock(StateFileBuilder.class);
+
+            CloudZmsSyncer zmsSyncer = new CloudZmsSyncer(cloudDomainStore, zmsReader, stateFileBuilder);
+
+            Map<String, DomainState> stateMap = zmsSyncer.loadState();
+            assertNotNull(stateMap);
+            assertTrue(zmsSyncer.syncDomains(stateMap));
+            assertTrue(zmsSyncer.saveDomainsState());
+            assertEquals(zmsSyncer.getNumDomainsUploaded(), 4);
+            // 1 was up-to-date
+            assertEquals(zmsSyncer.getNumDomainsNotUploaded(), 1);
+            assertEquals(zmsSyncer.getNumDomainsUploadFailed(), 0);
+            // delete paas
+            assertEquals(zmsSyncer.getNumDomainsDeleted(), 1);
+            assertEquals(zmsSyncer.getNumDomainsDeletedFailed(), 0);
+        } finally {
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS);
+            Config.getInstance().loadConfigParams();
+        }
+    }
+
+    @Test
     public void testSyncDomainsNoList() {
         System.out.println("testSyncDomainsNoList");
 

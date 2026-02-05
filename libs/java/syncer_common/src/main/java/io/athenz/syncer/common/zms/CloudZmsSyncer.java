@@ -34,6 +34,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.athenz.syncer.common.zms.Config.SYNC_CFG_PARAM_STATE_PATH;
 
@@ -71,13 +73,13 @@ public class CloudZmsSyncer {
     static final String RUNS_STATUS_SUCCESS_MSG = "Success";
     static final String RUNS_STATUS_FAIL_MSG    = "Failed";
 
-    private int numDomainsUploaded       = 0;
-    private int numDomainsNotUploaded    = 0;
-    private int numDomainsUploadFailed   = 0;
-    private int numDomainsDeleted        = 0;
-    private int numDomainsDeletedFailed  = 0;
-    private int numDomainsRefreshed      = 0;
-    private boolean loadStateSuccess     = false;
+    private AtomicInteger numDomainsUploaded       = new AtomicInteger(0);
+    private AtomicInteger numDomainsNotUploaded    = new AtomicInteger(0);
+    private AtomicInteger numDomainsUploadFailed   = new AtomicInteger(0);
+    private AtomicInteger numDomainsDeleted        = new AtomicInteger(0);
+    private AtomicInteger numDomainsDeletedFailed  = new AtomicInteger(0);
+    private AtomicInteger numDomainsRefreshed      = new AtomicInteger(0);
+    private boolean loadStateSuccess               = false;
 
     private final CloudDomainStore cloudStore;
     private final ZmsReader zmsReader;
@@ -162,31 +164,31 @@ public class CloudZmsSyncer {
     }
 
     public int getNumDomainsUploaded() {
-        return numDomainsUploaded;
+        return numDomainsUploaded.get();
     }
 
     public int getNumDomainsRefreshed() {
-        return numDomainsRefreshed;
+        return numDomainsRefreshed.get();
     }
 
     void setNumDomainsRefreshed(int count) {
-        numDomainsRefreshed = count;
+        numDomainsRefreshed.set(count);
     }
 
     public int getNumDomainsNotUploaded() {
-        return numDomainsNotUploaded;
+        return numDomainsNotUploaded.get();
     }
 
     public int getNumDomainsUploadFailed() {
-        return numDomainsUploadFailed;
+        return numDomainsUploadFailed.get();
     }
 
     public int getNumDomainsDeleted() {
-        return numDomainsDeleted;
+        return numDomainsDeleted.get();
     }
 
     public int getNumDomainsDeletedFailed() {
-        return numDomainsDeletedFailed;
+        return numDomainsDeletedFailed.get();
     }
 
     DomainState uploadDomain(final String domainName) {
@@ -208,17 +210,17 @@ public class CloudZmsSyncer {
         } catch (Exception exc) {
             LOG.error("failed to read zms data for domain: {}", domainName, exc);
             stateObj.setModified(LAST_MOD_NO_DATE);
-            ++numDomainsUploadFailed;
+            numDomainsUploadFailed.incrementAndGet();
             return stateObj;
         }
 
         try {
             cloudStore.uploadDomain(domainName, JSON.string(jwsDomain));
-            ++numDomainsUploaded;
+            numDomainsUploaded.incrementAndGet();
         } catch (Exception exc) {
             LOG.error("cloud sync error domain: {}", domainName, exc);
             modified = LAST_MOD_NO_DATE;
-            ++numDomainsUploadFailed;
+            numDomainsUploadFailed.incrementAndGet();
         }
         
         stateObj.setModified(modified);
@@ -233,10 +235,10 @@ public class CloudZmsSyncer {
         LOG.info("delete cloud domain: {}", domName);
         try {
             cloudStore.deleteDomain(domName);
-            ++numDomainsDeleted;
+            numDomainsDeleted.incrementAndGet();
         } catch (Exception ex) {
             LOG.error("error deleting cloud domain: {}", domName, ex);
-            ++numDomainsDeletedFailed;
+            numDomainsDeletedFailed.incrementAndGet();
             DomainState state = new DomainState();
             state.setDomain(domName);
             state.setModified(LAST_MOD_NO_DATE);
@@ -271,6 +273,11 @@ public class CloudZmsSyncer {
         int domainRefreshCountLimit = Integer.parseInt(Config.getInstance().getConfigParam(Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_COUNT));
         int domainRefreshTimeout = Integer.parseInt(Config.getInstance().getConfigParam(Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_TIMEOUT));
 
+        int domainFetchThreads = Integer.parseInt(Config.getInstance().getConfigParam(Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS));
+        if (domainFetchThreads < 1) {
+            domainFetchThreads = 1;
+        }
+
         // get domain list
 
         Set<String> latestZmsDomSet = new HashSet<>();
@@ -290,6 +297,10 @@ public class CloudZmsSyncer {
             processedDomains = new ArrayList<>(sdList.size());
 
             long now = System.currentTimeMillis() / 1000;
+
+            ExecutorService executor = Executors.newFixedThreadPool(domainFetchThreads);
+            List<Future<DomainState>> futures = new ArrayList<>(sdList.size());
+
             for (SignedDomain sDom : sdList) {
 
                 DomainData domainData = sDom.getDomain();
@@ -298,27 +309,42 @@ public class CloudZmsSyncer {
                 LOG.debug("domain: {}, list-modified: {}", domainName, domainModifiedTime);
                 latestZmsDomSet.add(domainName);
 
-                DomainState domainState = stateMap.get(domainName);
-                boolean uploadDom = domainState == null || !domainModifiedTime.equals(domainState.getModified());
-                boolean refreshDom = shouldRefreshDomain(domainState, now, domainRefreshCountLimit, domainRefreshTimeout);
-                if (uploadDom || refreshDom) {
-                    domainState = uploadDomain(domainName);
+                Callable<DomainState> task = () -> {
+                    DomainState domainState = stateMap.get(domainName);
+                    boolean uploadDom = domainState == null || !domainModifiedTime.equals(domainState.getModified());
+                    boolean refreshDom = shouldRefreshDomain(domainState, now, domainRefreshCountLimit, domainRefreshTimeout);
+                    if (uploadDom || refreshDom) {
+                        domainState = uploadDomain(domainName);
+                        if (refreshDom) {
+                            numDomainsRefreshed.incrementAndGet();
+                        }
+                    } else {
+                        // add the old domain state
+                        numDomainsNotUploaded.incrementAndGet();
+                        LOG.debug("no change so no upload of domain: {}", domainName);
+                    }
+                    return domainState;
+                };
+                futures.add(executor.submit(task));
+            }
+
+            executor.shutdown();
+
+            for (Future<DomainState> future : futures) {
+                try {
+                    DomainState domainState = future.get();
                     // add the updated domain state
                     processedDomains.add(domainState);
                     // check if we failed to upload this domain
                     if (domainState.getModified().equals(LAST_MOD_NO_DATE)) {
                         retStatus = false;
                     }
-                    if (refreshDom) {
-                        ++numDomainsRefreshed;
-                    }
-                } else {
-                    // add the old domain state
-                    processedDomains.add(domainState);
-                    ++numDomainsNotUploaded;
-                    LOG.debug("no change so no upload of domain: {}", domainName);
+                } catch (InterruptedException | ExecutionException e) {
+                    LOG.error("error waiting for task", e);
+                    retStatus = false;
                 }
             }
+
         } catch (Exception ex) {
             LOG.error("domain processing error", ex);
             throw ex;
@@ -352,7 +378,7 @@ public class CloudZmsSyncer {
 
     boolean shouldRefreshDomain(DomainState domainState, long now, int domainRefreshCountLimit, int domainRefreshTimeout) {
         // if there is no state, or we have reached our limit we return false
-        if (domainState == null || numDomainsRefreshed >= domainRefreshCountLimit) {
+        if (domainState == null || numDomainsRefreshed.get() >= domainRefreshCountLimit) {
             return false;
         }
         long fetchTime = domainState.getFetchTime();
