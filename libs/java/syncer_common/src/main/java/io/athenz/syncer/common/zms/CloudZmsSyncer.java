@@ -345,7 +345,11 @@ public class CloudZmsSyncer {
                     if (domainState.getModified().equals(LAST_MOD_NO_DATE)) {
                         retStatus = false;
                     }
-                } catch (InterruptedException | ExecutionException e) {
+                } catch (InterruptedException e) {
+                    LOG.error("interrupted waiting for task", e);
+                    Thread.currentThread().interrupt();
+                    retStatus = false;
+                } catch (ExecutionException e) {
                     LOG.error("error waiting for task", e);
                     retStatus = false;
                 }
