@@ -484,6 +484,48 @@ public class CloudZmsSyncerTest {
     }
 
     @Test
+    public void testSyncDomainsParallel() throws Exception {
+        System.out.println("testSyncDomainsParallel");
+        // set state file that will cause some domains to be deleted
+        Config.getInstance().loadConfigParams();
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS, "4");
+        Config.getInstance().loadConfigParams();
+
+        try {
+            DomainValidator validator = Mockito.mock(DomainValidator.class);
+            when(validator.validateJWSDomain(any())).thenReturn(true);
+            DomainValidator domainValidator = new DomainValidator();
+            when(validator.getDomainData(any())).thenAnswer(invocationOnMock -> {
+                Object[] arguments = invocationOnMock.getArguments();
+                return domainValidator.getDomainData((JWSDomain) arguments[0]);
+            });
+
+            CloudDomainStore cloudDomainStore = Mockito.mock(CloudDomainStore.class);
+            ZmsReader zmsReader = new ZmsReader(mockZMSClt, validator);
+
+            S3Client s3Client = Mockito.mock(S3Client.class);
+            StateFileBuilder stateFileBuilder = Mockito.mock(StateFileBuilder.class);
+
+            CloudZmsSyncer zmsSyncer = new CloudZmsSyncer(cloudDomainStore, zmsReader, stateFileBuilder);
+
+            Map<String, DomainState> stateMap = zmsSyncer.loadState();
+            assertNotNull(stateMap);
+            assertTrue(zmsSyncer.syncDomains(stateMap));
+            assertTrue(zmsSyncer.saveDomainsState());
+            assertEquals(zmsSyncer.getNumDomainsUploaded(), 4);
+            // 1 was up-to-date
+            assertEquals(zmsSyncer.getNumDomainsNotUploaded(), 1);
+            assertEquals(zmsSyncer.getNumDomainsUploadFailed(), 0);
+            // delete paas
+            assertEquals(zmsSyncer.getNumDomainsDeleted(), 1);
+            assertEquals(zmsSyncer.getNumDomainsDeletedFailed(), 0);
+        } finally {
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS);
+            Config.getInstance().loadConfigParams();
+        }
+    }
+
+    @Test
     public void testSyncDomainsNoList() {
         System.out.println("testSyncDomainsNoList");
 
@@ -612,36 +654,27 @@ public class CloudZmsSyncerTest {
         StateFileBuilder stateFileBuilder = Mockito.mock(StateFileBuilder.class);
 
         CloudZmsSyncer zmsSyncer = new CloudZmsSyncer(cloudDomainStore, zmsReader, stateFileBuilder);
-        assertFalse(zmsSyncer.shouldRefreshDomain(null, 10000, 10, 3600));
+        assertFalse(zmsSyncer.shouldRefreshDomain(null, 10000, 3600));
 
-        // test refresh limit reached
-
-        zmsSyncer.setNumDomainsRefreshed(10);
         DomainState state = new DomainState();
         state.setFetchTime(1000);
 
-        assertFalse(zmsSyncer.shouldRefreshDomain(state, 10000, 10, 9500));
+        // with time matching we should get success
 
-        zmsSyncer.setNumDomainsRefreshed(11);
-        assertFalse(zmsSyncer.shouldRefreshDomain(state, 10000, 10, 9500));
-
-        // with limit lower we should get success
-
-        zmsSyncer.setNumDomainsRefreshed(9);
-        assertTrue(zmsSyncer.shouldRefreshDomain(state, 10000, 10, 8500));
+        assertTrue(zmsSyncer.shouldRefreshDomain(state, 10000, 8500));
 
         // if the value is 0 then it's false
 
         state.setFetchTime(0);
-        assertFalse(zmsSyncer.shouldRefreshDomain(state, 10000, 10, 9500));
+        assertFalse(zmsSyncer.shouldRefreshDomain(state, 10000, 9500));
 
         // test where refresh is not necessary
 
         state.setFetchTime(600);
-        assertFalse(zmsSyncer.shouldRefreshDomain(state, 10000, 10, 9500));
+        assertFalse(zmsSyncer.shouldRefreshDomain(state, 10000, 9500));
 
         state.setFetchTime(400);
-        assertTrue(zmsSyncer.shouldRefreshDomain(state, 10000, 10, 9500));
+        assertTrue(zmsSyncer.shouldRefreshDomain(state, 10000, 9500));
     }
 
     @Test
@@ -651,7 +684,9 @@ public class CloudZmsSyncerTest {
 
         // Set up a short refresh timeout to ensure domains need refreshing
         System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_TIMEOUT, "300");
-        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_COUNT, "5");
+        // Set the limit lower than the number of domains that need refresh
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_COUNT, "2");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS, "4");
         Config.getInstance().loadConfigParams();
 
         DomainValidator validator = Mockito.mock(DomainValidator.class);
@@ -668,23 +703,34 @@ public class CloudZmsSyncerTest {
 
         CloudZmsSyncer zmsSyncer = new CloudZmsSyncer(cloudDomainStore, zmsReader, stateFileBuilder);
 
-        // Create a state map with a domain that needs refreshing
+        // Create a state map with domains that need refreshing
         Map<String, DomainState> stateMap = new HashMap<>();
-        DomainState staleState = new DomainState();
-        staleState.setDomain("clouds");
-        staleState.setModified("2023-01-01T00:00:00.000Z"); // Make sure modified time matches what ZMS returns
-        staleState.setFetchTime(System.currentTimeMillis()/1000 - 600); // Set fetch time to 10 minutes ago
-        stateMap.put("clouds", staleState);
+
+        // Use domains that are part of the mock ZMS response in MockZmsClient
+        // coretech, clouds, moon, pluto, coriander
 
         try {
+            // First we need to get the exact modification times from the mock to prevent "uploadDom = true"
+            List<SignedDomain> mockDomainList = zmsReader.getDomainList();
+            for (SignedDomain sDom : mockDomainList) {
+                String domName = sDom.getDomain().getName();
+                DomainState staleState = new DomainState();
+                staleState.setDomain(domName);
+                // Modified time matching exactly what ZMS returns will force refresh logic (not upload)
+                staleState.setModified(sDom.getDomain().getModified().toString());
+                staleState.setFetchTime(System.currentTimeMillis()/1000 - 600); // 10 minutes ago
+                stateMap.put(domName, staleState);
+            }
+
             // Before syncing, the count should be 0
-            assertEquals(0, zmsSyncer.getNumDomainsRefreshed());
+            assertEquals(zmsSyncer.getNumDomainsRefreshed(), 0);
 
             // Perform sync
             zmsSyncer.syncDomains(stateMap);
 
-            // After syncing, verify that numDomainsRefreshed was incremented
-            assertEquals(1, zmsSyncer.getNumDomainsRefreshed());
+            // After syncing, verify that numDomainsRefreshed was incremented,
+            // but exactly up to the limit (2)
+            assertEquals(zmsSyncer.getNumDomainsRefreshed(), 2);
 
         } catch (Exception e) {
             fail("Test failed with exception: " + e.getMessage());
@@ -692,6 +738,7 @@ public class CloudZmsSyncerTest {
             // Clean up
             System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_TIMEOUT);
             System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_COUNT);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS);
         }
     }
 
