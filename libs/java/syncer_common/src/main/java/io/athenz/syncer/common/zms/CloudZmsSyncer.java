@@ -312,12 +312,18 @@ public class CloudZmsSyncer {
                 Callable<DomainState> task = () -> {
                     DomainState domainState = stateMap.get(domainName);
                     boolean uploadDom = domainState == null || !domainModifiedTime.equals(domainState.getModified());
-                    boolean refreshDom = shouldRefreshDomain(domainState, now, domainRefreshCountLimit, domainRefreshTimeout);
+                    boolean timeToRefresh = shouldRefreshDomain(domainState, now, domainRefreshTimeout);
+                    boolean refreshDom = false;
+
+                    if (!uploadDom && timeToRefresh) {
+                        int prev = numDomainsRefreshed.getAndUpdate(current -> current < domainRefreshCountLimit ? current + 1 : current);
+                        if (prev < domainRefreshCountLimit) {
+                            refreshDom = true;
+                        }
+                    }
+
                     if (uploadDom || refreshDom) {
                         domainState = uploadDomain(domainName);
-                        if (refreshDom) {
-                            numDomainsRefreshed.incrementAndGet();
-                        }
                     } else {
                         // add the old domain state
                         numDomainsNotUploaded.incrementAndGet();
@@ -376,9 +382,9 @@ public class CloudZmsSyncer {
         return retStatus;
     }
 
-    boolean shouldRefreshDomain(DomainState domainState, long now, int domainRefreshCountLimit, int domainRefreshTimeout) {
-        // if there is no state, or we have reached our limit we return false
-        if (domainState == null || numDomainsRefreshed.get() >= domainRefreshCountLimit) {
+    boolean shouldRefreshDomain(DomainState domainState, long now, int domainRefreshTimeout) {
+        // if there is no state we return false
+        if (domainState == null) {
             return false;
         }
         long fetchTime = domainState.getFetchTime();
