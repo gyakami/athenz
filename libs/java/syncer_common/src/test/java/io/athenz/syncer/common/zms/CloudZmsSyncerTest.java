@@ -488,7 +488,8 @@ public class CloudZmsSyncerTest {
         System.out.println("testSyncDomainsParallel");
         // set state file that will cause some domains to be deleted
         Config.getInstance().loadConfigParams();
-        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS, "4");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_UPDATE_FETCH_THREADS, "4");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_FETCH_THREADS, "4");
         Config.getInstance().loadConfigParams();
 
         try {
@@ -520,7 +521,8 @@ public class CloudZmsSyncerTest {
             assertEquals(zmsSyncer.getNumDomainsDeleted(), 1);
             assertEquals(zmsSyncer.getNumDomainsDeletedFailed(), 0);
         } finally {
-            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_UPDATE_FETCH_THREADS);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_FETCH_THREADS);
             Config.getInstance().loadConfigParams();
         }
     }
@@ -686,7 +688,8 @@ public class CloudZmsSyncerTest {
         System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_TIMEOUT, "300");
         // Set the limit lower than the number of domains that need refresh
         System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_COUNT, "2");
-        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS, "4");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_UPDATE_FETCH_THREADS, "4");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_FETCH_THREADS, "4");
         Config.getInstance().loadConfigParams();
 
         DomainValidator validator = Mockito.mock(DomainValidator.class);
@@ -738,7 +741,8 @@ public class CloudZmsSyncerTest {
             // Clean up
             System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_TIMEOUT);
             System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_COUNT);
-            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_UPDATE_FETCH_THREADS);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_FETCH_THREADS);
         }
     }
 
@@ -776,6 +780,67 @@ public class CloudZmsSyncerTest {
         // delete paas
         assertEquals(zmsSyncer.getNumDomainsDeleted(), 0);
         assertEquals(zmsSyncer.getNumDomainsDeletedFailed(), 1);
+    }
+
+    @Test
+    public void testSyncDomainsThreadConfigNormalization() throws Exception {
+        System.out.println("testSyncDomainsThreadConfigNormalization");
+        Config.getInstance().loadConfigParams();
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_UPDATE_FETCH_THREADS, "0");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_FETCH_THREADS, "0");
+        System.setProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_COUNT, "-1");
+        Config.getInstance().loadConfigParams();
+
+        try {
+            DomainValidator validator = Mockito.mock(DomainValidator.class);
+            when(validator.validateJWSDomain(any())).thenReturn(true);
+            DomainValidator domainValidator = new DomainValidator();
+            when(validator.getDomainData(any())).thenAnswer(invocationOnMock -> {
+                Object[] arguments = invocationOnMock.getArguments();
+                return domainValidator.getDomainData((JWSDomain) arguments[0]);
+            });
+
+            CloudDomainStore cloudDomainStore = Mockito.mock(CloudDomainStore.class);
+            ZmsReader zmsReader = new ZmsReader(mockZMSClt, validator);
+            StateFileBuilder stateFileBuilder = Mockito.mock(StateFileBuilder.class);
+
+            CloudZmsSyncer zmsSyncer = new CloudZmsSyncer(cloudDomainStore, zmsReader, stateFileBuilder);
+            Map<String, DomainState> stateMap = zmsSyncer.loadState();
+            assertNotNull(stateMap);
+            assertTrue(zmsSyncer.syncDomains(stateMap));
+        } finally {
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_UPDATE_FETCH_THREADS);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_FETCH_THREADS);
+            System.clearProperty(Config.PROP_PREFIX + Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_COUNT);
+            Config.getInstance().loadConfigParams();
+        }
+    }
+
+    @Test
+    public void testSyncDomainsExecutionExceptionPath() throws Exception {
+        System.out.println("testSyncDomainsExecutionExceptionPath");
+        Config.getInstance().loadConfigParams();
+
+        DomainValidator validator = Mockito.mock(DomainValidator.class);
+        when(validator.validateJWSDomain(any())).thenReturn(true);
+        DomainValidator domainValidator = new DomainValidator();
+        when(validator.getDomainData(any())).thenAnswer(invocationOnMock -> {
+            Object[] arguments = invocationOnMock.getArguments();
+            return domainValidator.getDomainData((JWSDomain) arguments[0]);
+        });
+
+        CloudDomainStore cloudDomainStore = Mockito.mock(CloudDomainStore.class);
+        ZmsReader zmsReader = new ZmsReader(mockZMSClt, validator);
+        StateFileBuilder stateFileBuilder = Mockito.mock(StateFileBuilder.class);
+
+        CloudZmsSyncer zmsSyncer = new CloudZmsSyncer(cloudDomainStore, zmsReader, stateFileBuilder) {
+            @Override
+            DomainState uploadDomain(final String domainName) {
+                throw new RuntimeException("injected upload failure");
+            }
+        };
+
+        assertFalse(zmsSyncer.syncDomains(new HashMap<>()));
     }
 
     @Test

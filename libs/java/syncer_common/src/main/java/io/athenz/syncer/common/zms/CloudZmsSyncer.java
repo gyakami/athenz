@@ -273,9 +273,14 @@ public class CloudZmsSyncer {
         int domainRefreshCountLimit = Integer.parseInt(Config.getInstance().getConfigParam(Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_COUNT));
         int domainRefreshTimeout = Integer.parseInt(Config.getInstance().getConfigParam(Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_TIMEOUT));
 
-        int domainFetchThreads = Integer.parseInt(Config.getInstance().getConfigParam(Config.SYNC_CFG_PARAM_DOMAIN_FETCH_THREADS));
-        if (domainFetchThreads < 1) {
-            domainFetchThreads = 1;
+        int domainUpdateFetchThreads = Integer.parseInt(Config.getInstance().getConfigParam(Config.SYNC_CFG_PARAM_DOMAIN_UPDATE_FETCH_THREADS));
+        if (domainUpdateFetchThreads < 1) {
+            domainUpdateFetchThreads = 1;
+        }
+
+        int domainRefreshFetchThreads = Integer.parseInt(Config.getInstance().getConfigParam(Config.SYNC_CFG_PARAM_DOMAIN_REFRESH_FETCH_THREADS));
+        if (domainRefreshFetchThreads < 1) {
+            domainRefreshFetchThreads = 1;
         }
 
         // get domain list
@@ -297,9 +302,10 @@ public class CloudZmsSyncer {
             processedDomains = new ArrayList<>(sdList.size());
 
             long now = System.currentTimeMillis() / 1000;
+            int allowedRefreshCount = Math.max(0, domainRefreshCountLimit);
 
-            ExecutorService executor = Executors.newFixedThreadPool(domainFetchThreads);
-            List<Future<DomainState>> futures = new ArrayList<>(sdList.size());
+            List<String> updateDomains = new ArrayList<>(sdList.size());
+            List<String> refreshDomains = new ArrayList<>(Math.min(sdList.size(), allowedRefreshCount));
 
             for (SignedDomain sDom : sdList) {
 
@@ -309,50 +315,36 @@ public class CloudZmsSyncer {
                 LOG.debug("domain: {}, list-modified: {}", domainName, domainModifiedTime);
                 latestZmsDomSet.add(domainName);
 
-                Callable<DomainState> task = () -> {
-                    DomainState domainState = stateMap.get(domainName);
-                    boolean uploadDom = domainState == null || !domainModifiedTime.equals(domainState.getModified());
-                    boolean timeToRefresh = shouldRefreshDomain(domainState, now, domainRefreshTimeout);
-                    boolean refreshDom = false;
+                DomainState domainState = stateMap.get(domainName);
+                boolean uploadDom = domainState == null || !domainModifiedTime.equals(domainState.getModified());
+                boolean timeToRefresh = shouldRefreshDomain(domainState, now, domainRefreshTimeout);
 
-                    if (!uploadDom && timeToRefresh) {
-                        int prev = numDomainsRefreshed.getAndUpdate(current -> current < domainRefreshCountLimit ? current + 1 : current);
-                        if (prev < domainRefreshCountLimit) {
-                            refreshDom = true;
-                        }
-                    }
-
-                    if (uploadDom || refreshDom) {
-                        domainState = uploadDomain(domainName);
-                    } else {
-                        // add the old domain state
-                        numDomainsNotUploaded.incrementAndGet();
-                        LOG.debug("no change so no upload of domain: {}", domainName);
-                    }
-                    return domainState;
-                };
-                futures.add(executor.submit(task));
+                if (uploadDom) {
+                    updateDomains.add(domainName);
+                } else if (timeToRefresh && refreshDomains.size() < allowedRefreshCount) {
+                    refreshDomains.add(domainName);
+                    numDomainsRefreshed.incrementAndGet();
+                } else {
+                    // add the old domain state
+                    numDomainsNotUploaded.incrementAndGet();
+                    LOG.debug("no change so no upload of domain: {}", domainName);
+                    processedDomains.add(domainState);
+                }
             }
 
-            executor.shutdown();
+            LOG.info("processing domain updates with {} thread(s), count: {}", domainUpdateFetchThreads, updateDomains.size());
+            LOG.info("processing domain refreshes with {} thread(s), count: {}", domainRefreshFetchThreads, refreshDomains.size());
 
-            for (Future<DomainState> future : futures) {
-                try {
-                    DomainState domainState = future.get();
-                    // add the updated domain state
-                    processedDomains.add(domainState);
-                    // check if we failed to upload this domain
-                    if (domainState.getModified().equals(LAST_MOD_NO_DATE)) {
-                        retStatus = false;
-                    }
-                } catch (InterruptedException e) {
-                    LOG.error("interrupted waiting for task", e);
-                    Thread.currentThread().interrupt();
-                    retStatus = false;
-                } catch (ExecutionException e) {
-                    LOG.error("error waiting for task", e);
-                    retStatus = false;
-                }
+            ExecutorService updateExecutor = Executors.newFixedThreadPool(domainUpdateFetchThreads);
+            ExecutorService refreshExecutor = Executors.newFixedThreadPool(domainRefreshFetchThreads);
+            try {
+                List<Future<DomainState>> updateFutures = submitUploadTasks(updateExecutor, updateDomains);
+                List<Future<DomainState>> refreshFutures = submitUploadTasks(refreshExecutor, refreshDomains);
+                retStatus = collectProcessedDomains(updateFutures) && retStatus;
+                retStatus = collectProcessedDomains(refreshFutures) && retStatus;
+            } finally {
+                updateExecutor.shutdown();
+                refreshExecutor.shutdown();
             }
 
         } catch (Exception ex) {
@@ -383,6 +375,37 @@ public class CloudZmsSyncer {
                 " : number-domain-deleted: " + getNumDomainsDeleted() +
                 " : number-domain-deleted-failures: " + getNumDomainsDeletedFailed();
         LOG.info(sb);
+        return retStatus;
+    }
+
+    List<Future<DomainState>> submitUploadTasks(ExecutorService executor, List<String> domainNames) {
+        List<Future<DomainState>> futures = new ArrayList<>(domainNames.size());
+        for (String domainName : domainNames) {
+            futures.add(executor.submit(() -> uploadDomain(domainName)));
+        }
+        return futures;
+    }
+
+    boolean collectProcessedDomains(List<Future<DomainState>> futures) {
+        boolean retStatus = true;
+        for (Future<DomainState> future : futures) {
+            try {
+                DomainState domainState = future.get();
+                // add the updated domain state
+                processedDomains.add(domainState);
+                // check if we failed to upload this domain
+                if (domainState.getModified().equals(LAST_MOD_NO_DATE)) {
+                    retStatus = false;
+                }
+            } catch (InterruptedException e) {
+                LOG.error("interrupted waiting for task", e);
+                Thread.currentThread().interrupt();
+                retStatus = false;
+            } catch (ExecutionException e) {
+                LOG.error("error waiting for task", e);
+                retStatus = false;
+            }
+        }
         return retStatus;
     }
 
