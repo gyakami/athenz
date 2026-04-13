@@ -845,6 +845,37 @@ public class CloudZmsSyncerTest {
         };
 
         assertFalse(zmsSyncer.syncDomains(new HashMap<>()));
+        assertTrue(zmsSyncer.getNumDomainsUploadFailed() > 0);
+        assertTrue(zmsSyncer.saveRunState(null));
+
+        String stateFileName = Config.getInstance().getConfigParam(Config.SYNC_CFG_PARAM_STATE_PATH) + CloudZmsSyncer.RUN_STATE_FILE;
+        Struct rState = Config.getInstance().parseJsonConfigFile(stateFileName);
+        assertEquals(rState.getInt(CloudZmsSyncer.RUN_STATUS_FIELD), 1);
+    }
+
+    @Test
+    public void testAddFailedDomainStateIncrementsUploadFailed() throws Exception {
+        System.out.println("testAddFailedDomainStateIncrementsUploadFailed");
+
+        CloudDomainStore cloudDomainStore = Mockito.mock(CloudDomainStore.class);
+        ZmsReader zmsReader = Mockito.mock(ZmsReader.class);
+        StateFileBuilder stateFileBuilder = Mockito.mock(StateFileBuilder.class);
+        CloudZmsSyncer zmsSyncer = new CloudZmsSyncer(cloudDomainStore, zmsReader, stateFileBuilder);
+
+        java.lang.reflect.Field field = CloudZmsSyncer.class.getDeclaredField("processedDomains");
+        field.setAccessible(true);
+        field.set(zmsSyncer, new ArrayList<DomainState>());
+
+        Method addFailedMethod = CloudZmsSyncer.class.getDeclaredMethod("addFailedDomainState", String.class);
+        addFailedMethod.setAccessible(true);
+        addFailedMethod.invoke(zmsSyncer, "domain.one");
+
+        @SuppressWarnings("unchecked")
+        List<DomainState> processed = (List<DomainState>) field.get(zmsSyncer);
+        assertEquals(processed.size(), 1);
+        assertEquals(processed.get(0).getDomain(), "domain.one");
+        assertEquals(processed.get(0).getModified(), CloudZmsSyncer.LAST_MOD_NO_DATE);
+        assertEquals(zmsSyncer.getNumDomainsUploadFailed(), 1);
     }
 
     @Test
@@ -917,6 +948,7 @@ public class CloudZmsSyncerTest {
         assertEquals(processed.get(0).getModified(), CloudZmsSyncer.LAST_MOD_NO_DATE);
         assertEquals(processed.get(1).getDomain(), "domain.two");
         assertEquals(processed.get(1).getModified(), CloudZmsSyncer.LAST_MOD_NO_DATE);
+        assertEquals(zmsSyncer.getNumDomainsUploadFailed(), 2);
         assertTrue(firstFuture.cancelled);
         assertTrue(secondFuture.cancelled);
     }

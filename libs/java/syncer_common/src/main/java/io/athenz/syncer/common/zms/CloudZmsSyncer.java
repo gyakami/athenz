@@ -408,6 +408,11 @@ public class CloudZmsSyncer {
         return domainState;
     }
 
+    void addFailedDomainState(String domainName) {
+        processedDomains.add(createFailedDomainState(domainName));
+        numDomainsUploadFailed.incrementAndGet();
+    }
+
     boolean collectProcessedDomains(List<DomainUploadTask> tasks) {
         boolean retStatus = true;
         for (int i = 0; i < tasks.size(); i++) {
@@ -428,12 +433,12 @@ public class CloudZmsSyncer {
                 for (int j = i; j < tasks.size(); j++) {
                     DomainUploadTask pendingTask = tasks.get(j);
                     pendingTask.future.cancel(true);
-                    processedDomains.add(createFailedDomainState(pendingTask.domainName));
+                    addFailedDomainState(pendingTask.domainName);
                 }
                 break;
             } catch (ExecutionException e) {
                 LOG.error("error waiting for task for domain: {}", task.domainName, e);
-                processedDomains.add(createFailedDomainState(task.domainName));
+                addFailedDomainState(task.domainName);
                 retStatus = false;
             }
         }
