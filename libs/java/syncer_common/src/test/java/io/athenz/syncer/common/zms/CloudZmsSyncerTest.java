@@ -35,10 +35,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -841,6 +845,80 @@ public class CloudZmsSyncerTest {
         };
 
         assertFalse(zmsSyncer.syncDomains(new HashMap<>()));
+    }
+
+    @Test
+    public void testCollectProcessedDomainsInterruptedPath() throws Exception {
+        System.out.println("testCollectProcessedDomainsInterruptedPath");
+
+        CloudDomainStore cloudDomainStore = Mockito.mock(CloudDomainStore.class);
+        ZmsReader zmsReader = Mockito.mock(ZmsReader.class);
+        StateFileBuilder stateFileBuilder = Mockito.mock(StateFileBuilder.class);
+        CloudZmsSyncer zmsSyncer = new CloudZmsSyncer(cloudDomainStore, zmsReader, stateFileBuilder);
+
+        // initialize processedDomains so collectProcessedDomains can store fallback states
+        Method method = CloudZmsSyncer.class.getDeclaredMethod("collectProcessedDomains", List.class);
+        method.setAccessible(true);
+
+        java.lang.reflect.Field field = CloudZmsSyncer.class.getDeclaredField("processedDomains");
+        field.setAccessible(true);
+        field.set(zmsSyncer, new ArrayList<DomainState>());
+
+        class InterruptFuture implements Future<DomainState> {
+            boolean cancelled = false;
+
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                cancelled = true;
+                return true;
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return cancelled;
+            }
+
+            @Override
+            public boolean isDone() {
+                return false;
+            }
+
+            @Override
+            public DomainState get() throws InterruptedException, ExecutionException {
+                throw new InterruptedException("interrupted");
+            }
+
+            @Override
+            public DomainState get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException {
+                throw new InterruptedException("interrupted");
+            }
+        }
+
+        InterruptFuture firstFuture = new InterruptFuture();
+        InterruptFuture secondFuture = new InterruptFuture();
+
+        List<CloudZmsSyncer.DomainUploadTask> tasks = new ArrayList<>();
+        tasks.add(new CloudZmsSyncer.DomainUploadTask("domain.one", firstFuture));
+        tasks.add(new CloudZmsSyncer.DomainUploadTask("domain.two", secondFuture));
+
+        try {
+            boolean result = (boolean) method.invoke(zmsSyncer, tasks);
+            assertFalse(result);
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            // clear interrupt flag so other tests are not affected
+            Thread.interrupted();
+        }
+
+        @SuppressWarnings("unchecked")
+        List<DomainState> processed = (List<DomainState>) field.get(zmsSyncer);
+        assertEquals(processed.size(), 2);
+        assertEquals(processed.get(0).getDomain(), "domain.one");
+        assertEquals(processed.get(0).getModified(), CloudZmsSyncer.LAST_MOD_NO_DATE);
+        assertEquals(processed.get(1).getDomain(), "domain.two");
+        assertEquals(processed.get(1).getModified(), CloudZmsSyncer.LAST_MOD_NO_DATE);
+        assertTrue(firstFuture.cancelled);
+        assertTrue(secondFuture.cancelled);
     }
 
     @Test

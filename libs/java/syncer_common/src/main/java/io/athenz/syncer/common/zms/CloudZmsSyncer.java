@@ -73,6 +73,16 @@ public class CloudZmsSyncer {
     static final String RUNS_STATUS_SUCCESS_MSG = "Success";
     static final String RUNS_STATUS_FAIL_MSG    = "Failed";
 
+    static class DomainUploadTask {
+        private final String domainName;
+        private final Future<DomainState> future;
+
+        DomainUploadTask(String domainName, Future<DomainState> future) {
+            this.domainName = domainName;
+            this.future = future;
+        }
+    }
+
     private AtomicInteger numDomainsUploaded       = new AtomicInteger(0);
     private AtomicInteger numDomainsNotUploaded    = new AtomicInteger(0);
     private AtomicInteger numDomainsUploadFailed   = new AtomicInteger(0);
@@ -338,13 +348,18 @@ public class CloudZmsSyncer {
             ExecutorService updateExecutor = Executors.newFixedThreadPool(domainUpdateFetchThreads);
             ExecutorService refreshExecutor = Executors.newFixedThreadPool(domainRefreshFetchThreads);
             try {
-                List<Future<DomainState>> updateFutures = submitUploadTasks(updateExecutor, updateDomains);
-                List<Future<DomainState>> refreshFutures = submitUploadTasks(refreshExecutor, refreshDomains);
-                retStatus = collectProcessedDomains(updateFutures) && retStatus;
-                retStatus = collectProcessedDomains(refreshFutures) && retStatus;
+                List<DomainUploadTask> updateTasks = submitUploadTasks(updateExecutor, updateDomains);
+                List<DomainUploadTask> refreshTasks = submitUploadTasks(refreshExecutor, refreshDomains);
+                retStatus = collectProcessedDomains(updateTasks) && retStatus;
+                retStatus = collectProcessedDomains(refreshTasks) && retStatus;
             } finally {
-                updateExecutor.shutdown();
-                refreshExecutor.shutdown();
+                if (Thread.currentThread().isInterrupted()) {
+                    updateExecutor.shutdownNow();
+                    refreshExecutor.shutdownNow();
+                } else {
+                    updateExecutor.shutdown();
+                    refreshExecutor.shutdown();
+                }
             }
 
         } catch (Exception ex) {
@@ -378,19 +393,27 @@ public class CloudZmsSyncer {
         return retStatus;
     }
 
-    List<Future<DomainState>> submitUploadTasks(ExecutorService executor, List<String> domainNames) {
-        List<Future<DomainState>> futures = new ArrayList<>(domainNames.size());
+    List<DomainUploadTask> submitUploadTasks(ExecutorService executor, List<String> domainNames) {
+        List<DomainUploadTask> tasks = new ArrayList<>(domainNames.size());
         for (String domainName : domainNames) {
-            futures.add(executor.submit(() -> uploadDomain(domainName)));
+            tasks.add(new DomainUploadTask(domainName, executor.submit(() -> uploadDomain(domainName))));
         }
-        return futures;
+        return tasks;
     }
 
-    boolean collectProcessedDomains(List<Future<DomainState>> futures) {
+    DomainState createFailedDomainState(String domainName) {
+        DomainState domainState = new DomainState();
+        domainState.setDomain(domainName);
+        domainState.setModified(LAST_MOD_NO_DATE);
+        return domainState;
+    }
+
+    boolean collectProcessedDomains(List<DomainUploadTask> tasks) {
         boolean retStatus = true;
-        for (Future<DomainState> future : futures) {
+        for (int i = 0; i < tasks.size(); i++) {
+            DomainUploadTask task = tasks.get(i);
             try {
-                DomainState domainState = future.get();
+                DomainState domainState = task.future.get();
                 // add the updated domain state
                 processedDomains.add(domainState);
                 // check if we failed to upload this domain
@@ -401,8 +424,16 @@ public class CloudZmsSyncer {
                 LOG.error("interrupted waiting for task", e);
                 Thread.currentThread().interrupt();
                 retStatus = false;
+                // if interrupted, stop processing and ensure remaining domains are represented as failed
+                for (int j = i; j < tasks.size(); j++) {
+                    DomainUploadTask pendingTask = tasks.get(j);
+                    pendingTask.future.cancel(true);
+                    processedDomains.add(createFailedDomainState(pendingTask.domainName));
+                }
+                break;
             } catch (ExecutionException e) {
-                LOG.error("error waiting for task", e);
+                LOG.error("error waiting for task for domain: {}", task.domainName, e);
+                processedDomains.add(createFailedDomainState(task.domainName));
                 retStatus = false;
             }
         }
