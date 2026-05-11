@@ -17,11 +17,14 @@ package io.athenz.server.aws.common.store.impl;
 
 import static com.yahoo.athenz.common.ServerCommonConsts.ZTS_PROP_AWS_BUCKET_NAME;
 import static com.yahoo.athenz.common.ServerCommonConsts.ZTS_PROP_AWS_REGION_NAME;
+import static io.athenz.server.aws.common.store.impl.S3ChangeLogStore.ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR;
+import static io.athenz.server.aws.common.store.impl.S3ChangeLogStore.ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED;
 import static org.mockito.Mockito.*;
 import static org.testng.Assert.*;
 
 import java.io.*;
 import java.net.URI;
+import java.nio.file.Files;
 import java.security.cert.X509Certificate;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
@@ -1281,5 +1284,445 @@ public class S3ChangeLogStoreTest {
         assertEquals(domains.size(), 2);
         assertTrue(domains.contains("iaas"));
         assertTrue(domains.contains("iaas.athenz"));
+    }
+
+    @Test
+    public void testLocalCacheEnabledNoCacheDir() {
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        try {
+            new S3ChangeLogStore();
+            fail();
+        } catch (RuntimeException ex) {
+            assertTrue(ex.getMessage().contains("local cache directory must be configured"));
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+        }
+    }
+
+    @Test
+    public void testLocalCacheEnabledWithInvalidDir() throws IOException {
+        File tempFile = File.createTempFile("s3cache_test", ".tmp");
+        tempFile.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempFile.getAbsolutePath());
+        try {
+            new S3ChangeLogStore();
+            fail();
+        } catch (RuntimeException ex) {
+            assertTrue(ex.getMessage().contains("configured cache path is not a directory"));
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            tempFile.delete();
+        }
+    }
+
+    @Test
+    public void testLocalCacheSaveAndGetSignedDomain() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            assertTrue(store.localCacheEnabled);
+
+            GetObjectResponse response = Mockito.mock(GetObjectResponse.class);
+            InputStream is = new FileInputStream("src/test/resources/iaas.json");
+            ResponseInputStream<GetObjectResponse> s3Is = new ResponseInputStream<>(response, is);
+
+            GetObjectRequest getObjectRequest = GetObjectRequest.builder().bucket("s3-unit-test-bucket-name")
+                    .key("iaas").build();
+            when(store.awsS3Client.getObject(getObjectRequest)).thenReturn(s3Is);
+
+            SignedDomain signedDomain = store.getLocalSignedDomain("iaas");
+            assertNotNull(signedDomain);
+            assertEquals(signedDomain.getDomain().getName(), "iaas");
+
+            // verify the file was cached locally
+            File cachedFile = new File(tempDir, "iaas");
+            assertTrue(cachedFile.exists());
+
+            // now retrieve again - should come from local cache without S3
+            reset(store.awsS3Client);
+            SignedDomain cachedDomain = store.getLocalSignedDomain("iaas");
+            assertNotNull(cachedDomain);
+            assertEquals(cachedDomain.getDomain().getName(), "iaas");
+            verify(store.awsS3Client, never()).getObject(any(GetObjectRequest.class));
+
+            is.close();
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheSaveAndGetJWSDomain() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            assertTrue(store.localCacheEnabled);
+
+            GetObjectResponse response = Mockito.mock(GetObjectResponse.class);
+            InputStream is = new FileInputStream("src/test/resources/iaas.jws");
+            ResponseInputStream<GetObjectResponse> s3Is = new ResponseInputStream<>(response, is);
+
+            GetObjectRequest getObjectRequest = GetObjectRequest.builder().bucket("s3-unit-test-bucket-name")
+                    .key("iaas").build();
+            when(store.awsS3Client.getObject(getObjectRequest)).thenReturn(s3Is);
+
+            JWSDomain jwsDomain = store.getLocalJWSDomain("iaas");
+            assertNotNull(jwsDomain);
+
+            // verify the file was cached locally
+            File cachedFile = new File(tempDir, "iaas");
+            assertTrue(cachedFile.exists());
+
+            // now retrieve again - should come from local cache without S3
+            reset(store.awsS3Client);
+            JWSDomain cachedDomain = store.getLocalJWSDomain("iaas");
+            assertNotNull(cachedDomain);
+            verify(store.awsS3Client, never()).getObject(any(GetObjectRequest.class));
+
+            is.close();
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheRemoveDomain() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+
+            // write a file to simulate cached domain
+            File cachedFile = new File(tempDir, "iaas");
+            Files.write(cachedFile.toPath(), "test".getBytes());
+            assertTrue(cachedFile.exists());
+
+            store.removeLocalDomain("iaas");
+            assertFalse(cachedFile.exists());
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheSetLastModificationTimestamp() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+
+            // set a lastModTime and verify it's persisted
+            store.setLastModificationTimestamp("12345");
+            assertEquals(store.lastModTime, 12345);
+            File lastModFile = new File(tempDir, ".lastModTime");
+            assertTrue(lastModFile.exists());
+
+            // create a new store and verify it reads the persisted lastModTime
+            MockS3ChangeLogStore store2 = new MockS3ChangeLogStore();
+            assertEquals(store2.lastModTime, 12345);
+
+            // set null to clear
+            store2.setLastModificationTimestamp(null);
+            assertEquals(store2.lastModTime, 0);
+            assertFalse(lastModFile.exists());
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheGetLocalDomainListFromCache() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            // write cached domain files and lastModTime to simulate existing cache
+            Files.write(new File(tempDir, "iaas").toPath(), "{}".getBytes());
+            Files.write(new File(tempDir, "sports").toPath(), "{}".getBytes());
+            Files.write(new File(tempDir, ".lastModTime").toPath(),
+                    "{\"lastModTime\":\"99999\"}".getBytes());
+
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            assertEquals(store.lastModTime, 99999);
+
+            // getLocalDomainList should return cached list without calling S3
+            List<String> domains = store.getLocalDomainList();
+            assertEquals(domains.size(), 2);
+            assertTrue(domains.contains("iaas"));
+            assertTrue(domains.contains("sports"));
+
+            // verify no S3 listObjects was called
+            verify(store.awsS3Client, never()).listObjectsV2(any(ListObjectsV2Request.class));
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheDisabledByDefault() {
+        S3ChangeLogStore store = new S3ChangeLogStore();
+        assertFalse(store.localCacheEnabled);
+        assertNull(store.localCacheDir);
+    }
+
+    @Test
+    public void testLocalCacheSaveLocalDomainSignedDomain() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            SignedDomain signedDomain = new SignedDomain();
+            DomainData domainData = new DomainData().setName("testdomain");
+            signedDomain.setDomain(domainData);
+
+            store.saveLocalDomain("testdomain", signedDomain);
+
+            File cachedFile = new File(tempDir, "testdomain");
+            assertTrue(cachedFile.exists());
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheClearedOnNullLastModTime() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+
+            // simulate existing cached domains
+            Files.write(new File(tempDir, "domain1").toPath(), "{}".getBytes());
+            Files.write(new File(tempDir, "domain2").toPath(), "{}".getBytes());
+
+            store.setLastModificationTimestamp("12345");
+            store.setLastModificationTimestamp(null);
+
+            // domain files should be cleared
+            File domain1File = new File(tempDir, "domain1");
+            File domain2File = new File(tempDir, "domain2");
+            assertFalse(domain1File.exists());
+            assertFalse(domain2File.exists());
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheRetrieveLastModTimeInvalidContent() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            // write invalid content to .lastModTime
+            Files.write(new File(tempDir, ".lastModTime").toPath(), "invalid-json".getBytes());
+
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            assertEquals(store.lastModTime, 0);
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheRetrieveLastModTimeNoValue() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            // write struct without lastModTime key
+            Files.write(new File(tempDir, ".lastModTime").toPath(), "{\"other\":\"value\"}".getBytes());
+
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            assertEquals(store.lastModTime, 0);
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheGetCachedDomainInvalidContent() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+
+            // write invalid content to domain file
+            Files.write(new File(tempDir, "iaas").toPath(), "not-valid-json!!!".getBytes());
+
+            GetObjectResponse response = Mockito.mock(GetObjectResponse.class);
+            InputStream is = new FileInputStream("src/test/resources/iaas.json");
+            ResponseInputStream<GetObjectResponse> s3Is = new ResponseInputStream<>(response, is);
+
+            GetObjectRequest getObjectRequest = GetObjectRequest.builder().bucket("s3-unit-test-bucket-name")
+                    .key("iaas").build();
+            when(store.awsS3Client.getObject(getObjectRequest)).thenReturn(s3Is);
+
+            // should fall through to S3 fetch when local cache parse fails
+            SignedDomain signedDomain = store.getLocalSignedDomain("iaas");
+            assertNotNull(signedDomain);
+            assertEquals(signedDomain.getDomain().getName(), "iaas");
+            is.close();
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheDeleteNonExistentFile() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            // should not throw
+            store.removeLocalDomain("nonexistent");
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheGetDomainListEmptyCache() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            // write lastModTime but no domain files
+            Files.write(new File(tempDir, ".lastModTime").toPath(),
+                    "{\"lastModTime\":\"99999\"}".getBytes());
+
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            assertEquals(store.lastModTime, 99999);
+
+            // getLocalDomainList with empty cache should fall through to S3
+            ListObjectsV2Response mockListObjectsV2Response = mock(ListObjectsV2Response.class);
+            ArrayList<S3Object> objectList = new ArrayList<>();
+            objectList.add(S3Object.builder().key("iaas").build());
+            when(mockListObjectsV2Response.contents()).thenReturn(objectList);
+            when(mockListObjectsV2Response.isTruncated()).thenReturn(false);
+            when(store.awsS3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(mockListObjectsV2Response);
+
+            List<String> domains = store.getLocalDomainList();
+            assertEquals(domains.size(), 1);
+            assertTrue(domains.contains("iaas"));
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheSaveLocalDomainJWS() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            JWSDomain jwsDomain = new JWSDomain();
+
+            store.saveLocalDomain("testdomain", jwsDomain);
+
+            File cachedFile = new File(tempDir, "testdomain");
+            assertTrue(cachedFile.exists());
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheDisabledNoOpSaveRemove() {
+        S3ChangeLogStore store = new S3ChangeLogStore();
+        assertFalse(store.localCacheEnabled);
+
+        // these should be no-ops when cache is disabled
+        store.saveLocalDomain("test", new SignedDomain());
+        store.saveLocalDomain("test", new JWSDomain());
+        store.removeLocalDomain("test");
+    }
+
+    @Test
+    public void testLocalCacheCreateDirectory() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        File subDir = new File(tempDir, "newsubdir");
+        assertFalse(subDir.exists());
+
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, subDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            assertTrue(store.localCacheEnabled);
+            assertTrue(subDir.exists());
+            assertTrue(subDir.isDirectory());
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(subDir);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    private void deleteDirectory(File dir) {
+        if (dir == null || !dir.exists()) {
+            return;
+        }
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File file : files) {
+                file.delete();
+            }
+        }
+        dir.delete();
     }
 }

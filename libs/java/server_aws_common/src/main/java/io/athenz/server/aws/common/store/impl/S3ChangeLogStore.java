@@ -30,12 +30,15 @@ import com.yahoo.athenz.common.server.store.ChangeLogStore;
 import com.yahoo.athenz.zms.JWSDomain;
 import com.yahoo.athenz.zms.SignedDomain;
 import com.yahoo.athenz.zms.SignedDomains;
+import com.yahoo.rdl.Struct;
 import org.eclipse.jetty.util.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.TrustManagerFactory;
+import java.io.File;
 import java.net.URI;
+import java.nio.file.Files;
 import java.security.KeyStore;
 import java.security.cert.X509Certificate;
 import java.util.*;
@@ -64,10 +67,17 @@ public class S3ChangeLogStore implements ChangeLogStore {
     private static final String ZTS_PROP_AWS_S3_ENDPOINT = "athenz.zts.aws_s3_endpoint";
     private static final String ZTS_PROP_AWS_S3_CA_CERT = "athenz.zts.aws_s3_ca_cert";
     private static final String ZTS_PROP_S3_CHANGE_LOG_STORE_FILTER = "athenz.zts.s3_change_log_store_domain_filter";
+    static final String ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED = "athenz.zts.aws_s3_local_cache_enabled";
+    static final String ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR = "athenz.zts.aws_s3_local_cache_dir";
+    private static final String LAST_MOD_FNAME = ".lastModTime";
+    private static final String ATTR_LAST_MOD_TIME = "lastModTime";
     private final int nThreads = Integer.parseInt(System.getProperty(NUMBER_OF_THREADS, "10"));
     private final int defaultTimeoutSeconds = Integer.parseInt(System.getProperty(DEFAULT_TIMEOUT_SECONDS, "1800"));
     protected Map<String, SignedDomain> tempSignedDomainMap = new ConcurrentHashMap<>();
     protected Map<String, JWSDomain> tempJWSDomainMap = new ConcurrentHashMap<>();
+
+    boolean localCacheEnabled;
+    File localCacheDir;
 
     public S3ChangeLogStore() {
         init();
@@ -94,6 +104,33 @@ public class S3ChangeLogStore implements ChangeLogStore {
 
         jsonMapper = new ObjectMapper();
         jsonMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+        // check if local file cache is enabled
+
+        localCacheEnabled = Boolean.parseBoolean(System.getProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "false"));
+        if (localCacheEnabled) {
+            final String cacheDir = System.getProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            if (StringUtil.isEmpty(cacheDir)) {
+                LOGGER.error("S3ChangeLogStore: local cache enabled but no cache directory configured");
+                throw new RuntimeException("S3ChangeLogStore: local cache directory must be configured when local cache is enabled");
+            }
+            localCacheDir = new File(cacheDir);
+            if (!localCacheDir.exists()) {
+                if (!localCacheDir.mkdirs()) {
+                    throw new RuntimeException("S3ChangeLogStore: cannot create local cache directory: " + cacheDir);
+                }
+            } else if (!localCacheDir.isDirectory()) {
+                throw new RuntimeException("S3ChangeLogStore: configured cache path is not a directory: " + cacheDir);
+            }
+
+            // retrieve the last modification time from local cache
+            lastModTime = retrieveLocalLastModificationTime();
+
+            if (LOGGER.isInfoEnabled()) {
+                LOGGER.info("S3ChangeLogStore: local cache enabled, directory: {}, lastModTime: {}",
+                        cacheDir, lastModTime);
+            }
+        }
 
         // check to see if we have domain filter configuration.  This is useful
         // when the ZTS is only deployed to issue user certificates and not to store
@@ -147,6 +184,15 @@ public class S3ChangeLogStore implements ChangeLogStore {
             LOGGER.debug("getLocalSignedDomain: {}", domainName);
         }
 
+        // if local cache is enabled, try to read from local file first
+
+        if (localCacheEnabled) {
+            SignedDomain signedDomain = getLocalCachedDomain(domainName, SignedDomain.class);
+            if (signedDomain != null) {
+                return signedDomain;
+            }
+        }
+
         // clear the mapping if present and value is stored else null is returned
 
         SignedDomain signedDomain = tempSignedDomainMap.remove(domainName);
@@ -176,6 +222,13 @@ public class S3ChangeLogStore implements ChangeLogStore {
                 signedDomain = getSignedDomain(awsS3Client, domainName);
             }
         }
+
+        // save to local cache if enabled
+
+        if (localCacheEnabled && signedDomain != null) {
+            saveLocalCacheDomain(domainName, signedDomain);
+        }
+
         return signedDomain;
     }
 
@@ -184,6 +237,15 @@ public class S3ChangeLogStore implements ChangeLogStore {
 
         if (LOGGER.isDebugEnabled()) {
             LOGGER.debug("getLocalJWSDomain: {}", domainName);
+        }
+
+        // if local cache is enabled, try to read from local file first
+
+        if (localCacheEnabled) {
+            JWSDomain jwsDomain = getLocalCachedDomain(domainName, JWSDomain.class);
+            if (jwsDomain != null) {
+                return jwsDomain;
+            }
         }
 
         // clear the mapping if present and value is stored else null is returned
@@ -215,6 +277,13 @@ public class S3ChangeLogStore implements ChangeLogStore {
                 jwsDomain = getJWSDomain(awsS3Client, domainName);
             }
         }
+
+        // save to local cache if enabled
+
+        if (localCacheEnabled && jwsDomain != null) {
+            saveLocalCacheDomain(domainName, jwsDomain);
+        }
+
         return jwsDomain;
     }
 
@@ -258,21 +327,23 @@ public class S3ChangeLogStore implements ChangeLogStore {
 
     @Override
     public void removeLocalDomain(String domainName) {
-        // in AWS our Athenz syncer is responsible for pushing new
-        // changes including removing deleted domain to S3 so this
-        // api is just a no-op
+        if (localCacheEnabled) {
+            deleteLocalCacheFile(domainName);
+        }
     }
 
     @Override
     public void saveLocalDomain(String domainName, SignedDomain signedDomain) {
-        // in AWS our Athenz syncer is responsible for pushing new
-        // changes into S3 so this api is just a no-op
+        if (localCacheEnabled) {
+            saveLocalCacheDomain(domainName, signedDomain);
+        }
     }
 
     @Override
     public void saveLocalDomain(String domainName, JWSDomain jwsDomain) {
-        // in AWS our Athenz syncer is responsible for pushing new
-        // changes into S3 so this api is just a no-op
+        if (localCacheEnabled) {
+            saveLocalCacheDomain(domainName, jwsDomain);
+        }
     }
 
     /**
@@ -351,6 +422,19 @@ public class S3ChangeLogStore implements ChangeLogStore {
 
     @Override
     public List<String> getLocalDomainList() {
+
+        // if local cache is enabled and we have a valid lastModTime (meaning
+        // there is valid cached data), return the domain list from the local cache
+
+        if (localCacheEnabled && lastModTime > 0) {
+            List<String> cachedDomains = getLocalCacheDomainList();
+            if (!cachedDomains.isEmpty()) {
+                if (LOGGER.isInfoEnabled()) {
+                    LOGGER.info("getLocalDomainList: returning {} domains from local cache", cachedDomains.size());
+                }
+                return cachedDomains;
+            }
+        }
 
         // check to see if we need to maintain our last modification time.
         // this will be necessary if our last mod time field is null. We need
@@ -533,8 +617,15 @@ public class S3ChangeLogStore implements ChangeLogStore {
     public void setLastModificationTimestamp(String newLastModTime) {
         if (newLastModTime == null) {
             lastModTime = 0;
+            if (localCacheEnabled) {
+                deleteLocalCacheFile(LAST_MOD_FNAME);
+                clearLocalCacheDirectory();
+            }
         } else {
             lastModTime = Long.parseLong(newLastModTime);
+            if (localCacheEnabled) {
+                saveLocalLastModificationTime(newLastModTime);
+            }
         }
     }
 
@@ -579,6 +670,99 @@ public class S3ChangeLogStore implements ChangeLogStore {
 
     public ExecutorService getExecutorService() {
         return Executors.newFixedThreadPool(nThreads);
+    }
+
+    // Local cache helper methods
+
+    long retrieveLocalLastModificationTime() {
+        File file = new File(localCacheDir, LAST_MOD_FNAME);
+        if (!file.exists()) {
+            return 0;
+        }
+        try {
+            Struct lastModStruct = jsonMapper.readValue(file, Struct.class);
+            if (lastModStruct != null) {
+                String value = lastModStruct.getString(ATTR_LAST_MOD_TIME);
+                if (value != null) {
+                    return Long.parseLong(value);
+                }
+            }
+        } catch (Exception ex) {
+            LOGGER.error("S3ChangeLogStore: unable to read last modification time: {}", ex.getMessage());
+        }
+        return 0;
+    }
+
+    void saveLocalLastModificationTime(String newLastModTime) {
+        Struct lastModStruct = new Struct();
+        lastModStruct.put(ATTR_LAST_MOD_TIME, newLastModTime);
+        try {
+            byte[] data = jsonMapper.writeValueAsBytes(lastModStruct);
+            Files.write(new File(localCacheDir, LAST_MOD_FNAME).toPath(), data);
+        } catch (Exception ex) {
+            LOGGER.error("S3ChangeLogStore: unable to save last modification time: {}", ex.getMessage());
+        }
+    }
+
+    <T> T getLocalCachedDomain(String domainName, Class<T> classType) {
+        File file = new File(localCacheDir, domainName);
+        if (!file.exists()) {
+            return null;
+        }
+        try {
+            return jsonMapper.readValue(file, classType);
+        } catch (Exception ex) {
+            LOGGER.error("S3ChangeLogStore: unable to read cached domain {}: {}", domainName, ex.getMessage());
+        }
+        return null;
+    }
+
+    void saveLocalCacheDomain(String domainName, Object domain) {
+        try {
+            byte[] data = jsonMapper.writeValueAsBytes(domain);
+            Files.write(new File(localCacheDir, domainName).toPath(), data);
+        } catch (Exception ex) {
+            LOGGER.error("S3ChangeLogStore: unable to save cached domain {}: {}", domainName, ex.getMessage());
+        }
+    }
+
+    void deleteLocalCacheFile(String name) {
+        File file = new File(localCacheDir, name);
+        if (file.exists()) {
+            if (!file.delete()) {
+                LOGGER.error("S3ChangeLogStore: unable to delete cache file: {}", file.getAbsolutePath());
+            }
+        }
+    }
+
+    void clearLocalCacheDirectory() {
+        String[] files = localCacheDir.list();
+        if (files == null) {
+            return;
+        }
+        for (String name : files) {
+            if (name.charAt(0) == '.') {
+                continue;
+            }
+            File file = new File(localCacheDir, name);
+            if (!file.delete()) {
+                LOGGER.error("S3ChangeLogStore: unable to delete cache file: {}", file.getAbsolutePath());
+            }
+        }
+    }
+
+    List<String> getLocalCacheDomainList() {
+        List<String> names = new ArrayList<>();
+        String[] files = localCacheDir.list();
+        if (files == null) {
+            return names;
+        }
+        for (String name : files) {
+            if (name.charAt(0) != '.') {
+                names.add(name);
+            }
+        }
+        return names;
     }
 
     class ObjectS3Thread implements Runnable {
