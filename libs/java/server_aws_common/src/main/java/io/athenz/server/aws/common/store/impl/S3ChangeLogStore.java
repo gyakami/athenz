@@ -698,11 +698,16 @@ public class S3ChangeLogStore implements ChangeLogStore {
 
     // Local cache helper methods
 
+    static void error(String msg) {
+        LOGGER.error(msg);
+        throw new RuntimeException("S3ChangeLogStore: " + msg);
+    }
+
     void setupFilePermissions(File file, Set<PosixFilePermission> perms) {
         try {
             filesHelper.setPosixFilePermissions(file, perms);
         } catch (IOException ex) {
-            LOGGER.error("S3ChangeLogStore: unable to setup file with permissions: {}", ex.getMessage());
+            error("unable to setup file with permissions: " + ex.getMessage());
         }
     }
 
@@ -713,7 +718,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
                     PosixFilePermission.OWNER_WRITE);
             setupFilePermissions(file, perms);
         } catch (IOException ex) {
-            LOGGER.error("S3ChangeLogStore: unable to setup domain file with permissions: {}", ex.getMessage());
+            error("unable to setup domain file with permissions: " + ex.getMessage());
         }
     }
 
@@ -750,7 +755,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
         lastModStruct.put(ATTR_LAST_MOD_TIME, newLastModTime);
         byte[] data = jsonValueAsBytes(lastModStruct, Struct.class);
         if (data == null) {
-            return;
+            error("unable to serialize last modification time");
         }
         File file = new File(localCacheDir, LAST_MOD_FNAME);
         if (!file.exists()) {
@@ -759,7 +764,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
         try {
             filesHelper.write(file, data);
         } catch (IOException ex) {
-            LOGGER.error("S3ChangeLogStore: unable to save last modification time: {}", ex.getMessage());
+            error("unable to save file: " + file.getPath() + " error: " + ex.getMessage());
         }
     }
 
@@ -779,7 +784,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
     synchronized void saveLocalCacheDomain(String domainName, Object domain) {
         byte[] data = jsonValueAsBytes(domain, domain.getClass());
         if (data == null) {
-            return;
+            error("unable to serialize domain: " + domainName);
         }
         File file = new File(localCacheDir, domainName);
         if (!file.exists()) {
@@ -788,7 +793,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
         try {
             filesHelper.write(file, data);
         } catch (IOException ex) {
-            LOGGER.error("S3ChangeLogStore: unable to save cached domain {}: {}", domainName, ex.getMessage());
+            error("unable to save file: " + file.getPath() + " error: " + ex.getMessage());
         }
     }
 
@@ -800,7 +805,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
         try {
             filesHelper.delete(file);
         } catch (IOException ex) {
-            LOGGER.error("S3ChangeLogStore: unable to delete cache file: {}", file.getAbsolutePath());
+            error("cannot delete file or directory: " + name + " : exc: " + ex);
         }
     }
 
@@ -817,7 +822,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
             try {
                 filesHelper.delete(file);
             } catch (IOException ex) {
-                LOGGER.error("S3ChangeLogStore: unable to delete cache file: {}", file.getAbsolutePath());
+                error("cannot delete file or directory: " + name + " : exc: " + ex);
             }
         }
     }
