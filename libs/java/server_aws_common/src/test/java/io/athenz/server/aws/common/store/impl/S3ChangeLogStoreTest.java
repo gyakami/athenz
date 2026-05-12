@@ -25,9 +25,12 @@ import static org.testng.Assert.*;
 import java.io.*;
 import java.net.URI;
 import java.nio.file.Files;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.cert.X509Certificate;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+
+import com.yahoo.athenz.common.server.util.FilesHelper;
 
 import com.yahoo.athenz.auth.util.Crypto;
 import com.yahoo.athenz.zms.JWSDomain;
@@ -1709,6 +1712,273 @@ public class S3ChangeLogStoreTest {
             System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
             System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
             deleteDirectory(subDir);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testSetupFilePermissionsIOException() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            FilesHelper mockFilesHelper = Mockito.mock(FilesHelper.class);
+            when(mockFilesHelper.setPosixFilePermissions(any(), any()))
+                    .thenThrow(new IOException("permission error"));
+            store.filesHelper = mockFilesHelper;
+
+            // should not throw, just log the error
+            store.setupFilePermissions(tempDir, EnumSet.of(PosixFilePermission.OWNER_READ));
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testSetupDomainFileIOException() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            FilesHelper mockFilesHelper = Mockito.mock(FilesHelper.class);
+            doThrow(new IOException("create error")).when(mockFilesHelper).createEmptyFile(any());
+            store.filesHelper = mockFilesHelper;
+
+            // should not throw, just log the error
+            store.setupDomainFile(new File(tempDir, "testdomain"));
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testJsonValueAsBytesException() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+
+            // pass an object that will cause serialization to fail with a view
+            Object badObj = new Object() {
+                public String getValue() { throw new RuntimeException("serialize error"); }
+            };
+            byte[] result = store.jsonValueAsBytes(badObj, badObj.getClass());
+            assertNull(result);
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testSaveLocalLastModificationTimeWriteIOException() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            FilesHelper mockFilesHelper = Mockito.mock(FilesHelper.class);
+            when(mockFilesHelper.write(any(), any(byte[].class))).thenThrow(new IOException("write error"));
+            store.filesHelper = mockFilesHelper;
+
+            // should not throw, just log the error
+            store.saveLocalLastModificationTime("12345");
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testSaveLocalCacheDomainWriteIOException() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            FilesHelper mockFilesHelper = Mockito.mock(FilesHelper.class);
+            when(mockFilesHelper.write(any(), any(byte[].class))).thenThrow(new IOException("write error"));
+            store.filesHelper = mockFilesHelper;
+
+            SignedDomain signedDomain = new SignedDomain();
+            signedDomain.setDomain(new DomainData().setName("testdomain"));
+
+            // should not throw, just log the error
+            store.saveLocalCacheDomain("testdomain", signedDomain);
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testDeleteLocalCacheFileIOException() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+
+            // create the file so it exists
+            File cachedFile = new File(tempDir, "testdomain");
+            Files.write(cachedFile.toPath(), "{}".getBytes());
+
+            FilesHelper mockFilesHelper = Mockito.mock(FilesHelper.class);
+            doThrow(new IOException("delete error")).when(mockFilesHelper).delete(any());
+            store.filesHelper = mockFilesHelper;
+
+            // should not throw, just log the error
+            store.deleteLocalCacheFile("testdomain");
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testClearLocalCacheDirectoryIOException() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+
+            // create domain files
+            Files.write(new File(tempDir, "domain1").toPath(), "{}".getBytes());
+            Files.write(new File(tempDir, "domain2").toPath(), "{}".getBytes());
+
+            FilesHelper mockFilesHelper = Mockito.mock(FilesHelper.class);
+            doThrow(new IOException("delete error")).when(mockFilesHelper).delete(any());
+            store.filesHelper = mockFilesHelper;
+
+            // should not throw, just log the error
+            store.clearLocalCacheDirectory();
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testLocalCacheInitClearsOrphanedDomainFiles() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            // write domain files but no .lastModTime -> lastModTime will be 0
+            // so init should clear these files
+            Files.write(new File(tempDir, "orphan1").toPath(), "{}".getBytes());
+            Files.write(new File(tempDir, "orphan2").toPath(), "{}".getBytes());
+
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+            assertEquals(store.lastModTime, 0);
+
+            // orphaned domain files should have been cleaned up
+            assertFalse(new File(tempDir, "orphan1").exists());
+            assertFalse(new File(tempDir, "orphan2").exists());
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testGetLocalCacheDomainListNullDirectory() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+
+            // point localCacheDir to a non-existent path so list() returns null
+            store.localCacheDir = new File("/non/existent/path");
+            List<String> names = store.getLocalCacheDomainList();
+            assertNotNull(names);
+            assertTrue(names.isEmpty());
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testSaveLocalCacheDomainNullData() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+
+            // pass an object that will fail serialization (null data path)
+            Object badObj = new Object() {
+                public String getValue() { throw new RuntimeException("serialize error"); }
+            };
+
+            // should not throw - returns early when jsonValueAsBytes returns null
+            store.saveLocalCacheDomain("testdomain", badObj);
+            assertFalse(new File(tempDir, "testdomain").exists());
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
+            deleteDirectory(tempDir);
+        }
+    }
+
+    @Test
+    public void testSaveLocalLastModificationTimeNullData() throws IOException {
+        File tempDir = Files.createTempDirectory("s3cache_test").toFile();
+        tempDir.deleteOnExit();
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "true");
+        System.setProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR, tempDir.getAbsolutePath());
+        try {
+            MockS3ChangeLogStore store = new MockS3ChangeLogStore();
+
+            // mock jsonMapper to return null from writerWithView
+            com.fasterxml.jackson.databind.ObjectMapper mockMapper = Mockito.mock(com.fasterxml.jackson.databind.ObjectMapper.class);
+            com.fasterxml.jackson.databind.ObjectWriter mockWriter = Mockito.mock(com.fasterxml.jackson.databind.ObjectWriter.class);
+            when(mockMapper.writerWithView(any(Class.class))).thenReturn(mockWriter);
+            when(mockWriter.writeValueAsBytes(any())).thenThrow(new RuntimeException("serialize error"));
+
+            // use reflection to set jsonMapper
+            java.lang.reflect.Field field = S3ChangeLogStore.class.getDeclaredField("jsonMapper");
+            field.setAccessible(true);
+            Object originalMapper = field.get(store);
+            field.set(store, mockMapper);
+
+            // should not throw - returns early when data is null
+            store.saveLocalLastModificationTime("12345");
+
+            // restore
+            field.set(store, originalMapper);
+        } catch (Exception ex) {
+            fail("Should not throw: " + ex.getMessage());
+        } finally {
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
+            System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
             deleteDirectory(tempDir);
         }
     }

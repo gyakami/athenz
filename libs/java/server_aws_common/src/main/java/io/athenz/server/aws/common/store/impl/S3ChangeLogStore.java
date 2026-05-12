@@ -30,6 +30,7 @@ import com.yahoo.athenz.common.server.store.ChangeLogStore;
 import com.yahoo.athenz.zms.JWSDomain;
 import com.yahoo.athenz.zms.SignedDomain;
 import com.yahoo.athenz.zms.SignedDomains;
+import com.yahoo.athenz.common.server.util.FilesHelper;
 import com.yahoo.rdl.Struct;
 import org.eclipse.jetty.util.StringUtil;
 import org.slf4j.Logger;
@@ -37,8 +38,9 @@ import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.TrustManagerFactory;
 import java.io.File;
+import java.io.IOException;
 import java.net.URI;
-import java.nio.file.Files;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.KeyStore;
 import java.security.cert.X509Certificate;
 import java.util.*;
@@ -78,6 +80,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
 
     boolean localCacheEnabled;
     File localCacheDir;
+    FilesHelper filesHelper;
 
     public S3ChangeLogStore() {
         init();
@@ -107,6 +110,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
 
         // check if local file cache is enabled
 
+        filesHelper = new FilesHelper();
         localCacheEnabled = Boolean.parseBoolean(System.getProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED, "false"));
         if (localCacheEnabled) {
             final String cacheDir = System.getProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);
@@ -123,8 +127,24 @@ public class S3ChangeLogStore implements ChangeLogStore {
                 throw new RuntimeException("S3ChangeLogStore: configured cache path is not a directory: " + cacheDir);
             }
 
+            // set directory permissions to owner only
+
+            Set<PosixFilePermission> dirPerms = EnumSet.of(PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE);
+            setupFilePermissions(localCacheDir, dirPerms);
+
             // retrieve the last modification time from local cache
             lastModTime = retrieveLocalLastModificationTime();
+
+            // if we do not have a last modification timestamp then we're going to
+            // clean up all locally cached domain files
+
+            if (lastModTime == 0) {
+                List<String> localDomains = getLocalCacheDomainList();
+                for (String domain : localDomains) {
+                    deleteLocalCacheFile(domain);
+                }
+            }
 
             if (LOGGER.isInfoEnabled()) {
                 LOGGER.info("S3ChangeLogStore: local cache enabled, directory: {}, lastModTime: {}",
@@ -674,7 +694,35 @@ public class S3ChangeLogStore implements ChangeLogStore {
 
     // Local cache helper methods
 
-    long retrieveLocalLastModificationTime() {
+    void setupFilePermissions(File file, Set<PosixFilePermission> perms) {
+        try {
+            filesHelper.setPosixFilePermissions(file, perms);
+        } catch (IOException ex) {
+            LOGGER.error("S3ChangeLogStore: unable to setup file with permissions: {}", ex.getMessage());
+        }
+    }
+
+    void setupDomainFile(File file) {
+        try {
+            filesHelper.createEmptyFile(file);
+            Set<PosixFilePermission> perms = EnumSet.of(PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE);
+            setupFilePermissions(file, perms);
+        } catch (IOException ex) {
+            LOGGER.error("S3ChangeLogStore: unable to setup domain file with permissions: {}", ex.getMessage());
+        }
+    }
+
+    byte[] jsonValueAsBytes(Object obj, Class<?> cls) {
+        try {
+            return jsonMapper.writerWithView(cls).writeValueAsBytes(obj);
+        } catch (Exception ex) {
+            LOGGER.error("S3ChangeLogStore: unable to serialize json object: {}", ex.getMessage());
+            return null;
+        }
+    }
+
+    synchronized long retrieveLocalLastModificationTime() {
         File file = new File(localCacheDir, LAST_MOD_FNAME);
         if (!file.exists()) {
             return 0;
@@ -693,18 +741,25 @@ public class S3ChangeLogStore implements ChangeLogStore {
         return 0;
     }
 
-    void saveLocalLastModificationTime(String newLastModTime) {
+    synchronized void saveLocalLastModificationTime(String newLastModTime) {
         Struct lastModStruct = new Struct();
         lastModStruct.put(ATTR_LAST_MOD_TIME, newLastModTime);
+        byte[] data = jsonValueAsBytes(lastModStruct, Struct.class);
+        if (data == null) {
+            return;
+        }
+        File file = new File(localCacheDir, LAST_MOD_FNAME);
+        if (!file.exists()) {
+            setupDomainFile(file);
+        }
         try {
-            byte[] data = jsonMapper.writeValueAsBytes(lastModStruct);
-            Files.write(new File(localCacheDir, LAST_MOD_FNAME).toPath(), data);
-        } catch (Exception ex) {
+            filesHelper.write(file, data);
+        } catch (IOException ex) {
             LOGGER.error("S3ChangeLogStore: unable to save last modification time: {}", ex.getMessage());
         }
     }
 
-    <T> T getLocalCachedDomain(String domainName, Class<T> classType) {
+    synchronized <T> T getLocalCachedDomain(String domainName, Class<T> classType) {
         File file = new File(localCacheDir, domainName);
         if (!file.exists()) {
             return null;
@@ -717,25 +772,35 @@ public class S3ChangeLogStore implements ChangeLogStore {
         return null;
     }
 
-    void saveLocalCacheDomain(String domainName, Object domain) {
+    synchronized void saveLocalCacheDomain(String domainName, Object domain) {
+        byte[] data = jsonValueAsBytes(domain, domain.getClass());
+        if (data == null) {
+            return;
+        }
+        File file = new File(localCacheDir, domainName);
+        if (!file.exists()) {
+            setupDomainFile(file);
+        }
         try {
-            byte[] data = jsonMapper.writeValueAsBytes(domain);
-            Files.write(new File(localCacheDir, domainName).toPath(), data);
-        } catch (Exception ex) {
+            filesHelper.write(file, data);
+        } catch (IOException ex) {
             LOGGER.error("S3ChangeLogStore: unable to save cached domain {}: {}", domainName, ex.getMessage());
         }
     }
 
-    void deleteLocalCacheFile(String name) {
+    synchronized void deleteLocalCacheFile(String name) {
         File file = new File(localCacheDir, name);
-        if (file.exists()) {
-            if (!file.delete()) {
-                LOGGER.error("S3ChangeLogStore: unable to delete cache file: {}", file.getAbsolutePath());
-            }
+        if (!file.exists()) {
+            return;
+        }
+        try {
+            filesHelper.delete(file);
+        } catch (IOException ex) {
+            LOGGER.error("S3ChangeLogStore: unable to delete cache file: {}", file.getAbsolutePath());
         }
     }
 
-    void clearLocalCacheDirectory() {
+    synchronized void clearLocalCacheDirectory() {
         String[] files = localCacheDir.list();
         if (files == null) {
             return;
@@ -745,7 +810,9 @@ public class S3ChangeLogStore implements ChangeLogStore {
                 continue;
             }
             File file = new File(localCacheDir, name);
-            if (!file.delete()) {
+            try {
+                filesHelper.delete(file);
+            } catch (IOException ex) {
                 LOGGER.error("S3ChangeLogStore: unable to delete cache file: {}", file.getAbsolutePath());
             }
         }
