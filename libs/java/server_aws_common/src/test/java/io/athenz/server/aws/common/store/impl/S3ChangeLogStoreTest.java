@@ -1772,11 +1772,11 @@ public class S3ChangeLogStoreTest {
         try {
             MockS3ChangeLogStore store = new MockS3ChangeLogStore();
 
-            // pass an object that will cause serialization to fail with a view
+            // pass an object that will cause serialization to fail
             Object badObj = new Object() {
                 public String getValue() { throw new RuntimeException("serialize error"); }
             };
-            byte[] result = store.jsonValueAsBytes(badObj, badObj.getClass());
+            byte[] result = store.jsonValueAsBytes(badObj);
             assertNull(result);
         } finally {
             System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
@@ -1951,9 +1951,7 @@ public class S3ChangeLogStoreTest {
 
             // mock jsonMapper to return null bytes (null data path)
             com.fasterxml.jackson.databind.ObjectMapper mockMapper = Mockito.mock(com.fasterxml.jackson.databind.ObjectMapper.class);
-            com.fasterxml.jackson.databind.ObjectWriter mockWriter = Mockito.mock(com.fasterxml.jackson.databind.ObjectWriter.class);
-            when(mockMapper.writerWithView(any(Class.class))).thenReturn(mockWriter);
-            when(mockWriter.writeValueAsBytes(any())).thenReturn(null);
+            when(mockMapper.writeValueAsBytes(any())).thenReturn(null);
             store.setObjectMapper(mockMapper);
 
             try {
@@ -1980,9 +1978,7 @@ public class S3ChangeLogStoreTest {
 
             // mock jsonMapper to return null bytes
             com.fasterxml.jackson.databind.ObjectMapper mockMapper = Mockito.mock(com.fasterxml.jackson.databind.ObjectMapper.class);
-            com.fasterxml.jackson.databind.ObjectWriter mockWriter = Mockito.mock(com.fasterxml.jackson.databind.ObjectWriter.class);
-            when(mockMapper.writerWithView(any(Class.class))).thenReturn(mockWriter);
-            when(mockWriter.writeValueAsBytes(any())).thenReturn(null);
+            when(mockMapper.writeValueAsBytes(any())).thenReturn(null);
             store.setObjectMapper(mockMapper);
 
             try {

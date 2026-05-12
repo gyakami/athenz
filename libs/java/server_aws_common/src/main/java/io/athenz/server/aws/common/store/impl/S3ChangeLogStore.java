@@ -55,7 +55,7 @@ import static com.yahoo.athenz.common.ServerCommonConsts.ZTS_PROP_AWS_REGION_NAM
 public class S3ChangeLogStore implements ChangeLogStore {
     private static final Logger LOGGER = LoggerFactory.getLogger(S3ChangeLogStore.class);
 
-    volatile long lastModTime;
+    long lastModTime;
     S3Client awsS3Client = null;
 
     private String s3BucketName;
@@ -78,8 +78,8 @@ public class S3ChangeLogStore implements ChangeLogStore {
     protected Map<String, SignedDomain> tempSignedDomainMap = new ConcurrentHashMap<>();
     protected Map<String, JWSDomain> tempJWSDomainMap = new ConcurrentHashMap<>();
 
-    boolean localCacheEnabled;
-    File localCacheDir;
+    volatile boolean localCacheEnabled;
+    volatile File localCacheDir;
     FilesHelper filesHelper;
 
     public S3ChangeLogStore() {
@@ -446,7 +446,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
         // if local cache is enabled and we have a valid lastModTime (meaning
         // there is valid cached data), return the domain list from the local cache
 
-        if (localCacheEnabled && lastModTime > 0) {
+        if (localCacheEnabled && getLastModTime() > 0) {
             List<String> cachedDomains = getLocalCacheDomainList();
             if (!cachedDomains.isEmpty()) {
                 if (LOGGER.isInfoEnabled()) {
@@ -462,9 +462,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
         // paged results and while processing the last page, the Syncer pushes
         // updated domains from the earlier pages
 
-        if (lastModTime == 0) {
-            lastModTime = System.currentTimeMillis();
-        }
+        initLastModTimeIfNeeded();
 
         // we are going to initialize our s3 client here since
         // this is the first entry point before we start
@@ -649,6 +647,16 @@ public class S3ChangeLogStore implements ChangeLogStore {
         }
     }
 
+    synchronized long getLastModTime() {
+        return lastModTime;
+    }
+
+    synchronized void initLastModTimeIfNeeded() {
+        if (lastModTime == 0) {
+            lastModTime = System.currentTimeMillis();
+        }
+    }
+
     S3Client getS3Client() {
         if (StringUtil.isEmpty(awsRegion)) {
             throw new RuntimeException("S3ChangeLogStore: Couldn't detect AWS region");
@@ -692,6 +700,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
         return Executors.newFixedThreadPool(nThreads);
     }
 
+    // visible for testing
     void setObjectMapper(ObjectMapper objectMapper) {
         this.jsonMapper = objectMapper;
     }
@@ -722,9 +731,9 @@ public class S3ChangeLogStore implements ChangeLogStore {
         }
     }
 
-    byte[] jsonValueAsBytes(Object obj, Class<?> cls) {
+    byte[] jsonValueAsBytes(Object obj) {
         try {
-            return jsonMapper.writerWithView(cls).writeValueAsBytes(obj);
+            return jsonMapper.writeValueAsBytes(obj);
         } catch (Exception ex) {
             LOGGER.error("S3ChangeLogStore: unable to serialize json object: {}", ex.getMessage());
             return null;
@@ -753,7 +762,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
     synchronized void saveLocalLastModificationTime(String newLastModTime) {
         Struct lastModStruct = new Struct();
         lastModStruct.put(ATTR_LAST_MOD_TIME, newLastModTime);
-        byte[] data = jsonValueAsBytes(lastModStruct, Struct.class);
+        byte[] data = jsonValueAsBytes(lastModStruct);
         if (data == null) {
             error("unable to serialize last modification time");
         }
@@ -782,7 +791,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
     }
 
     synchronized void saveLocalCacheDomain(String domainName, Object domain) {
-        byte[] data = jsonValueAsBytes(domain, domain.getClass());
+        byte[] data = jsonValueAsBytes(domain);
         if (data == null) {
             error("unable to serialize domain: " + domainName);
         }
