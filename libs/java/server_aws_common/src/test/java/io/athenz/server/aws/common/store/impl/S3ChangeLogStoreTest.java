@@ -1963,19 +1963,10 @@ public class S3ChangeLogStoreTest {
             when(mockMapper.writerWithView(any(Class.class))).thenReturn(mockWriter);
             when(mockWriter.writeValueAsBytes(any())).thenThrow(new RuntimeException("serialize error"));
 
-            // use reflection to set jsonMapper
-            java.lang.reflect.Field field = S3ChangeLogStore.class.getDeclaredField("jsonMapper");
-            field.setAccessible(true);
-            Object originalMapper = field.get(store);
-            field.set(store, mockMapper);
+            store.setObjectMapper(mockMapper);
 
             // should not throw - returns early when data is null
             store.saveLocalLastModificationTime("12345");
-
-            // restore
-            field.set(store, originalMapper);
-        } catch (Exception ex) {
-            fail("Should not throw: " + ex.getMessage());
         } finally {
             System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED);
             System.clearProperty(ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR);

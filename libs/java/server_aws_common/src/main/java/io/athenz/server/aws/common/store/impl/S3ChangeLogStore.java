@@ -55,7 +55,7 @@ import static com.yahoo.athenz.common.ServerCommonConsts.ZTS_PROP_AWS_REGION_NAM
 public class S3ChangeLogStore implements ChangeLogStore {
     private static final Logger LOGGER = LoggerFactory.getLogger(S3ChangeLogStore.class);
 
-    long lastModTime;
+    volatile long lastModTime;
     S3Client awsS3Client = null;
 
     private String s3BucketName;
@@ -634,7 +634,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
     }
 
     @Override
-    public void setLastModificationTimestamp(String newLastModTime) {
+    public synchronized void setLastModificationTimestamp(String newLastModTime) {
         if (newLastModTime == null) {
             lastModTime = 0;
             if (localCacheEnabled) {
@@ -690,6 +690,10 @@ public class S3ChangeLogStore implements ChangeLogStore {
 
     public ExecutorService getExecutorService() {
         return Executors.newFixedThreadPool(nThreads);
+    }
+
+    void setObjectMapper(ObjectMapper objectMapper) {
+        this.jsonMapper = objectMapper;
     }
 
     // Local cache helper methods
@@ -818,7 +822,7 @@ public class S3ChangeLogStore implements ChangeLogStore {
         }
     }
 
-    List<String> getLocalCacheDomainList() {
+    synchronized List<String> getLocalCacheDomainList() {
         List<String> names = new ArrayList<>();
         String[] files = localCacheDir.list();
         if (files == null) {
