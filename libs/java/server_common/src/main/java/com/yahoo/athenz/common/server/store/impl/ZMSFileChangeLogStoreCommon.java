@@ -16,16 +16,13 @@
 
 package com.yahoo.athenz.common.server.store.impl;
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yahoo.athenz.common.server.util.FilesHelper;
 import com.yahoo.athenz.zms.*;
-import com.yahoo.rdl.Struct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
@@ -37,47 +34,22 @@ public class ZMSFileChangeLogStoreCommon {
     File rootDir;
     ObjectMapper jsonMapper;
     FilesHelper filesHelper;
+    LocalFileChangeLogStore localFileStore;
 
     public String lastModTime;
 
     private static final String ATTR_TAG           = "tag";
     private static final String VALUE_TRUE         = "true";
-    private static final String LAST_MOD_FNAME     = ".lastModTime";
-    private static final String ATTR_LAST_MOD_TIME = "lastModTime";
 
     boolean requestConditions;
     int maxRateLimitRetryCount = 101;
 
     public ZMSFileChangeLogStoreCommon(final String rootDirectory) {
 
-        // create our file helper object
-
-        filesHelper = new FilesHelper();
-
-        // initialize our jackson object mapper
-
-        jsonMapper = new ObjectMapper();
-        jsonMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-
-        // set up our directory for storing domain files
-
-        rootDir = new File(rootDirectory);
-
-        if (!rootDir.exists()) {
-            if (!rootDir.mkdirs()) {
-                error("cannot create specified root: " + rootDirectory);
-            }
-        } else {
-            if (!rootDir.isDirectory()) {
-                error("specified root is not a directory: " + rootDirectory);
-            }
-        }
-
-        // make sure only the user has access
-
-        Set<PosixFilePermission> perms = EnumSet.of(PosixFilePermission.OWNER_READ,
-                PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE);
-        setupFilePermissions(rootDir, perms);
+        localFileStore = new LocalFileChangeLogStore(rootDirectory, "ZMSFileChangeLogStore");
+        rootDir = localFileStore.getRootDir();
+        jsonMapper = localFileStore.getObjectMapper();
+        filesHelper = localFileStore.getFilesHelper();
 
         // retrieve our last modification timestamp
 
@@ -144,105 +116,45 @@ public class ZMSFileChangeLogStoreCommon {
         put(domainName, jsonValueAsBytes(jwsDomain, JWSDomain.class));
     }
 
+    void syncLocalFileStore() {
+        localFileStore.setRootDir(rootDir);
+        localFileStore.setObjectMapper(jsonMapper);
+        localFileStore.setFilesHelper(filesHelper);
+    }
+
     void setupFilePermissions(File file, Set<PosixFilePermission> perms) {
-        try {
-            filesHelper.setPosixFilePermissions(file, perms);
-        } catch (IOException ex) {
-            error("unable to setup file with permissions: " + ex.getMessage());
-        }
+        syncLocalFileStore();
+        localFileStore.setupFilePermissions(file, perms);
     }
 
     void setupDomainFile(File file) {
-
-        try {
-            filesHelper.createEmptyFile(file);
-            Set<PosixFilePermission> perms = EnumSet.of(PosixFilePermission.OWNER_READ,
-                    PosixFilePermission.OWNER_WRITE);
-            setupFilePermissions(file, perms);
-        } catch (IOException ex) {
-            error("unable to setup domain file with permissions: " + ex.getMessage());
-        }
+        syncLocalFileStore();
+        localFileStore.setupDomainFile(file);
     }
 
     public synchronized <T> T get(String name, Class<T> classType) {
-
-        File file = new File(rootDir, name);
-        if (!file.exists()) {
-            return null;
-        }
-
-        try {
-            return jsonMapper.readValue(file, classType);
-        } catch (Exception ex) {
-            LOGGER.error("Unable to retrieve file: {} error: {}", file.getAbsolutePath(), ex.getMessage());
-        }
-        return null;
+        syncLocalFileStore();
+        return localFileStore.get(name, classType);
     }
 
     public synchronized void put(String name, byte[] data) {
-
-        File file = new File(rootDir, name);
-        if (!file.exists()) {
-            setupDomainFile(file);
-        }
-
-        try {
-            filesHelper.write(file, data);
-        } catch (IOException ex) {
-            error("unable to save file: " + file.getPath() + " error: " + ex.getMessage());
-        }
+        syncLocalFileStore();
+        localFileStore.put(name, data);
     }
 
     public synchronized void delete(String name) {
-        File file = new File(rootDir, name);
-        if (!file.exists()) {
-            return;
-        }
-
-        try {
-            filesHelper.delete(file);
-        } catch (Exception exc) {
-            error("Cannot delete file or directory: " + name + " : exc: " + exc);
-        }
+        syncLocalFileStore();
+        localFileStore.delete(name);
     }
 
     public List<String> getLocalDomainList() {
-
-        List<String> names = new ArrayList<>();
-        String[] domains = rootDir.list();
-        if (domains == null) {
-            return names;
-        }
-        for (String name : domains) {
-
-            // we are going to skip any hidden files
-
-            if (name.charAt(0) != '.') {
-                names.add(name);
-            }
-        }
-
-        return names;
+        syncLocalFileStore();
+        return localFileStore.getLocalDomainList();
     }
 
     public Map<String, DomainAttributes> getLocalDomainAttributeList() {
-
-        Map<String, DomainAttributes> domainAttrs = new HashMap<>();
-        String[] domains = rootDir.list();
-        if (domains == null) {
-            return domainAttrs;
-        }
-        for (String name : domains) {
-
-            // we are going to skip any hidden files
-
-            if (name.charAt(0) != '.') {
-                File file = new File(rootDir, name);
-                domainAttrs.put(name, new DomainAttributes().setFetchTime(file.lastModified() / 1000));
-            }
-        }
-
-        return domainAttrs;
+        syncLocalFileStore();
+        return localFileStore.getLocalDomainAttributeList();
     }
 
     public Set<String> getServerDomainList(ZMSClient zmsClient) {
@@ -254,35 +166,27 @@ public class ZMSFileChangeLogStoreCommon {
     }
 
     public String retrieveLastModificationTime() {
-        Struct lastModStruct = get(LAST_MOD_FNAME, Struct.class);
-        if (lastModStruct == null) {
-            return null;
-        }
-        return lastModStruct.getString(ATTR_LAST_MOD_TIME);
+        syncLocalFileStore();
+        return localFileStore.retrieveLastModificationTime();
     }
 
     public void setLastModificationTimestamp(String newLastModTime) {
 
         lastModTime = newLastModTime;
         if (lastModTime == null) {
-            delete(LAST_MOD_FNAME);
+            delete(LocalFileChangeLogStore.LAST_MOD_FNAME);
         } else {
 
             // update the last modification timestamp
 
-            Struct lastModStruct = new Struct();
-            lastModStruct.put(ATTR_LAST_MOD_TIME, lastModTime);
-            put(LAST_MOD_FNAME, jsonValueAsBytes(lastModStruct, Struct.class));
+            syncLocalFileStore();
+            localFileStore.saveLastModificationTime(lastModTime);
         }
     }
 
     byte[] jsonValueAsBytes(Object obj, Class<?> cls) {
-        try {
-            return jsonMapper.writerWithView(cls).writeValueAsBytes(obj);
-        } catch (Exception ex) {
-            LOGGER.error("Unable to serialize json object: {}", ex.getMessage());
-            return null;
-        }
+        syncLocalFileStore();
+        return localFileStore.jsonValueAsBytes(obj, cls);
     }
 
     public String retrieveTagHeader(Map<String, List<String>> responseHeaders) {
