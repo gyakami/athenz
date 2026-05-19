@@ -75,8 +75,8 @@ public class S3ChangeLogStore implements ChangeLogStore {
     protected Map<String, SignedDomain> tempSignedDomainMap = new ConcurrentHashMap<>();
     protected Map<String, JWSDomain> tempJWSDomainMap = new ConcurrentHashMap<>();
 
-    volatile boolean localCacheEnabled;
-    volatile File localCacheDir;
+    boolean localCacheEnabled;
+    File localCacheDir;
     FilesHelper filesHelper;
     LocalFileChangeLogStore localCacheStore;
 
