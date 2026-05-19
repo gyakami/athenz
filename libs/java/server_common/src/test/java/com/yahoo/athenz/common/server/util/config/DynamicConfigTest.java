@@ -394,6 +394,19 @@ public class DynamicConfigTest {
         @SuppressWarnings("unused") boolean deleted = configFile.delete();
     }
 
+    @Test
+    public void testDurationSleepAndStopOnInterrupt() {
+        DynamicConfigDuration dynamicConfig = new DynamicConfigDuration(100, TimeUnit.MILLISECONDS);
+
+        Thread.currentThread().interrupt();
+        dynamicConfig.sleepAndStopOnInterrupt();
+        assertFalse(Thread.currentThread().isInterrupted());
+
+        Thread.currentThread().interrupt();
+        dynamicConfig.sleepAndStopOnInterrupt(sleepMilliseconds -> sleepMilliseconds);
+        assertFalse(Thread.currentThread().isInterrupted());
+    }
+
     /** Just like {@link DynamicConfigString} - only throw when value is "THROWING_VALUE" */
     private static class DynamicConfigTester extends DynamicConfigString {
 

@@ -105,6 +105,23 @@ public class LocalFileChangeLogStoreTest {
     }
 
     @Test
+    public void testClearDomainFilesSkipsHiddenFiles() throws IOException {
+        tempDir = Files.createTempDirectory("local_file_clog_store").toFile();
+        LocalFileChangeLogStore store = new LocalFileChangeLogStore(tempDir.getAbsolutePath(), "TestStore");
+
+        File domainFile = new File(tempDir, "athenz");
+        File hiddenFile = new File(tempDir, ".lastModTime");
+        Files.write(domainFile.toPath(), "{}".getBytes());
+        Files.write(hiddenFile.toPath(), "{}".getBytes());
+
+        store.clearDomainFiles();
+
+        assertFalse(domainFile.exists());
+        assertTrue(hiddenFile.exists());
+        assertTrue(store.getLocalDomainList().isEmpty());
+    }
+
+    @Test
     public void testMalformedJsonReturnsNull() throws IOException {
         tempDir = Files.createTempDirectory("local_file_clog_store").toFile();
         LocalFileChangeLogStore store = new LocalFileChangeLogStore(tempDir.getAbsolutePath(), "TestStore");
@@ -114,6 +131,18 @@ public class LocalFileChangeLogStoreTest {
 
         assertNull(store.get("athenz", Struct.class));
         assertNull(store.retrieveLastModificationTime());
+    }
+
+    @Test
+    public void testJsonValueAsBytes() throws IOException {
+        tempDir = Files.createTempDirectory("local_file_clog_store").toFile();
+        LocalFileChangeLogStore store = new LocalFileChangeLogStore(tempDir.getAbsolutePath(), "TestStore");
+
+        Struct data = new Struct();
+        data.put("key", "value");
+        assertNotNull(store.jsonValueAsBytes(data));
+
+        assertNull(store.jsonValueAsBytes(new UnserializableValue()));
     }
 
     @Test
@@ -132,4 +161,9 @@ public class LocalFileChangeLogStoreTest {
             assertTrue(ex.getMessage().contains("unable to save file"));
         }
     }
+
+    // Empty bean used to exercise JSON serialization failure handling.
+    private static class UnserializableValue {
+    }
+
 }
