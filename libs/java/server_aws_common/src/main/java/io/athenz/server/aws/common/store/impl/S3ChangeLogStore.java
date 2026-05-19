@@ -68,8 +68,8 @@ public class S3ChangeLogStore implements ChangeLogStore {
     private static final String ZTS_PROP_AWS_S3_ENDPOINT = "athenz.zts.aws_s3_endpoint";
     private static final String ZTS_PROP_AWS_S3_CA_CERT = "athenz.zts.aws_s3_ca_cert";
     private static final String ZTS_PROP_S3_CHANGE_LOG_STORE_FILTER = "athenz.zts.s3_change_log_store_domain_filter";
-    static final String ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED = "athenz.zts.aws_s3_local_cache_enabled";
-    static final String ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR = "athenz.zts.aws_s3_local_cache_dir";
+    private static final String ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED = "athenz.zts.aws_s3_local_cache_enabled";
+    private static final String ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR = "athenz.zts.aws_s3_local_cache_dir";
     private final int nThreads = Integer.parseInt(System.getProperty(NUMBER_OF_THREADS, "10"));
     private final int defaultTimeoutSeconds = Integer.parseInt(System.getProperty(DEFAULT_TIMEOUT_SECONDS, "1800"));
     protected Map<String, SignedDomain> tempSignedDomainMap = new ConcurrentHashMap<>();

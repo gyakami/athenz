@@ -17,8 +17,6 @@ package io.athenz.server.aws.common.store.impl;
 
 import static com.yahoo.athenz.common.ServerCommonConsts.ZTS_PROP_AWS_BUCKET_NAME;
 import static com.yahoo.athenz.common.ServerCommonConsts.ZTS_PROP_AWS_REGION_NAME;
-import static io.athenz.server.aws.common.store.impl.S3ChangeLogStore.ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR;
-import static io.athenz.server.aws.common.store.impl.S3ChangeLogStore.ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED;
 import static org.mockito.Mockito.*;
 import static org.testng.Assert.*;
 
@@ -56,6 +54,8 @@ import com.yahoo.athenz.zms.SignedDomains;
 public class S3ChangeLogStoreTest {
 
     private static final String DEFAULT_TIMEOUT_SECONDS = "athenz.zts.bucket.threads.timeout";
+    private static final String ZTS_PROP_AWS_S3_LOCAL_CACHE_ENABLED = "athenz.zts.aws_s3_local_cache_enabled";
+    private static final String ZTS_PROP_AWS_S3_LOCAL_CACHE_DIR = "athenz.zts.aws_s3_local_cache_dir";
     private final int defaultTimeoutSeconds = Integer.parseInt(System.getProperty(DEFAULT_TIMEOUT_SECONDS, "1800"));
 
     @BeforeMethod
